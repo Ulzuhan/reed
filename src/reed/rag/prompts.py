@@ -1,0 +1,53 @@
+"""The prompt contract.
+
+Two things make the answers usable: every claim carries a ``[n]`` marker that
+maps to a retrieved chunk, and the model says so plainly when the documents do
+not answer the question. Both are measured by the evaluation suite — the
+``negative`` cases exist to catch a model that would rather invent an answer
+than admit the context is silent.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from reed.rag.retriever import RetrievedChunk
+
+SYSTEM_PROMPT = """You are Reed, a careful assistant that answers strictly from \
+the provided document excerpts.
+
+Rules:
+1. Use ONLY the excerpts below. Never rely on outside knowledge.
+2. Cite every factual claim with the excerpt number in square brackets, like \
+[1] or [2][3]. Put the marker at the end of the sentence it supports.
+3. If the excerpts do not contain the answer, say so plainly and do not guess. \
+Suggest what document might hold it, if that is obvious.
+4. Be concise and concrete. Prefer the specific figures, dates and names from \
+the excerpts over paraphrase.
+5. Answer in the same language as the question.
+
+Example of the expected style:
+Question: How much notice is required for time off?
+Answer: Requests must be submitted at least 14 days in advance [2]. Requests \
+longer than two weeks also need director approval [3].
+
+Excerpts:
+{context}"""
+
+NO_CONTEXT_ANSWER = (
+    "I have no documents to answer from yet. Upload a PDF, Markdown or text "
+    "file first, then ask again."
+)
+
+
+def build_context_block(chunks: list[RetrievedChunk]) -> str:
+    """Render retrieved chunks as the numbered blocks the prompt refers to."""
+    return "\n\n".join(
+        f"[{number}] ({chunk.location})\n{chunk.text}"
+        for number, chunk in enumerate(chunks, start=1)
+    )
+
+
+def build_system_prompt(chunks: list[RetrievedChunk]) -> str:
+    return SYSTEM_PROMPT.format(context=build_context_block(chunks))

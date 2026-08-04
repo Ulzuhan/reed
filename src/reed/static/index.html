@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reed — ask your documents</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌾</text></svg>"
+    />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <header class="brand">
+          <span class="brand-mark">🌾</span>
+          <div>
+            <h1>Reed</h1>
+            <p class="tagline">has read your documents</p>
+          </div>
+        </header>
+
+        <div class="uploader" id="uploader">
+          <input type="file" id="file-input" accept=".pdf,.md,.markdown,.txt,.text" multiple hidden />
+          <button class="upload-button" id="upload-button" type="button">Add documents</button>
+          <p class="hint">or drop PDF, Markdown and text files here</p>
+        </div>
+
+        <div class="documents">
+          <div class="documents-header">
+            <h2>Documents</h2>
+            <span class="counter" id="doc-counter">0</span>
+          </div>
+          <ul id="doc-list" class="doc-list"></ul>
+          <p class="empty" id="doc-empty">Nothing ingested yet.</p>
+        </div>
+
+        <footer class="status-bar">
+          <span class="dot" id="status-dot"></span>
+          <span id="status-text">connecting…</span>
+          <button class="link-button" id="settings-button" type="button">API key</button>
+        </footer>
+      </aside>
+
+      <main class="chat">
+        <div class="messages" id="messages">
+          <div class="welcome" id="welcome">
+            <h2>Ask your documents</h2>
+            <p>
+              Upload a file, then ask a question. Answers are grounded in what you uploaded, and
+              every claim carries a citation you can click.
+            </p>
+            <div class="samples" id="samples"></div>
+          </div>
+        </div>
+
+        <form class="composer" id="composer">
+          <textarea
+            id="question"
+            rows="1"
+            placeholder="Ask about your documents…"
+            autocomplete="off"
+          ></textarea>
+          <button type="submit" id="send" title="Send (Enter)">Ask</button>
+        </form>
+      </main>
+    </div>
+
+    <dialog id="settings-dialog">
+      <form method="dialog" class="settings">
+        <h2>API key</h2>
+        <p>Only needed when the server runs with <code>REED_API_KEY</code> set.</p>
+        <input type="password" id="api-key-input" placeholder="X-API-Key" autocomplete="off" />
+        <menu>
+          <button value="cancel">Cancel</button>
+          <button value="save" id="save-key" class="primary">Save</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from reed import __version__
-from reed.api.routes import documents, health
+from reed.api.routes import ask, documents, health
 from reed.config import Settings
 from reed.log import get_logger
 from reed.services import Services, build_services
@@ -71,6 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(documents.router)
+    app.include_router(ask.router)
     _mount_ui(app)
     return app
 

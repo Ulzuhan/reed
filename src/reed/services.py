@@ -13,6 +13,7 @@ from reed.ingest.registry import DocumentRegistry
 from reed.log import get_logger, setup_logging
 
 if TYPE_CHECKING:
+    from fastembed.rerank.cross_encoder import TextCrossEncoder
     from langchain_core.embeddings import Embeddings
     from langchain_core.language_models import BaseChatModel
     from langchain_qdrant import QdrantVectorStore
@@ -29,6 +30,7 @@ class Services:
         self._registry: DocumentRegistry | None = None
         self._qdrant: QdrantClient | None = None
         self._vectorstore: QdrantVectorStore | None = None
+        self._reranker: TextCrossEncoder | None = None
 
     @property
     def chat(self) -> BaseChatModel:
@@ -81,6 +83,16 @@ class Services:
                 build_sparse_embeddings(self.settings),
             )
         return self._vectorstore
+
+    @property
+    def reranker(self) -> TextCrossEncoder:
+        """Cross-encoder for reranking, downloaded on first use only."""
+        if self._reranker is None:
+            from fastembed.rerank.cross_encoder import TextCrossEncoder
+
+            logger.info("loading reranker %s", self.settings.rerank_model)
+            self._reranker = TextCrossEncoder(model_name=self.settings.rerank_model)
+        return self._reranker
 
     def close(self) -> None:
         if self._registry is not None:
