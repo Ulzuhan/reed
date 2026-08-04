@@ -52,6 +52,31 @@ def test_markdown_chunks_carry_their_nearest_heading() -> None:
     assert expenses_chunk.section == "Expenses"
 
 
+def test_headings_come_from_the_chunk_not_from_a_lookup() -> None:
+    """A regression guard on section labels.
+
+    The Markdown splitter rewrites separators, so chunks cannot reliably be
+    located back in the source. Doing so mislabelled chunks with a heading from
+    further down the document.
+    """
+    document = "\n\n".join(
+        f"## Section {n}\n\nBody text for section {n}. " + ("filler " * 40) for n in range(1, 6)
+    )
+
+    chunks = split_sections(
+        [RawSection(text=document, page=None)],
+        source_type="md",
+        chunk_size=400,
+        chunk_overlap=60,
+    )
+
+    for chunk in chunks:
+        # Whatever heading a chunk claims, its body must belong to that section.
+        assert chunk.section is not None
+        number = chunk.section.split()[-1]
+        assert f"section {number}" in chunk.text.lower()
+
+
 def test_plain_text_has_no_section_labels() -> None:
     chunks = split_sections(
         [RawSection(text="# not a heading here\nplain text", page=None)],

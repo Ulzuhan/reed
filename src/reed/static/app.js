@@ -160,31 +160,40 @@ async function uploadFiles(files) {
 
 /* -------------------------------------------------------------------- chat */
 
+// Citation markers become buttons; **bold** becomes bold. Everything else is
+// inserted as text, so a model that emits markup cannot inject it.
+const INLINE = /\[(\d{1,2})\]|\*\*([^*]+)\*\*/g;
+
 function renderAnswer(container, text, sourceNodes) {
-  // Turn [n] markers into buttons that reveal the source they point at.
   container.replaceChildren();
-  const pattern = /\[(\d{1,2})\]/g;
   let cursor = 0;
   let match;
 
-  while ((match = pattern.exec(text)) !== null) {
+  while ((match = INLINE.exec(text)) !== null) {
     if (match.index > cursor) {
       container.append(document.createTextNode(text.slice(cursor, match.index)));
     }
-    const number = Number(match[1]);
-    const chip = el("button", "cite", String(number));
-    chip.type = "button";
-    chip.addEventListener("click", () => {
-      const target = sourceNodes[number - 1];
-      if (!target) return;
-      target.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      target.classList.add("flash");
-      setTimeout(() => target.classList.remove("flash"), 1400);
-    });
-    container.append(chip);
+    container.append(
+      match[1] !== undefined ? citation(Number(match[1]), sourceNodes) : el("strong", null, match[2]),
+    );
     cursor = match.index + match[0].length;
   }
+  INLINE.lastIndex = 0;
   container.append(document.createTextNode(text.slice(cursor)));
+}
+
+function citation(number, sourceNodes) {
+  const chip = el("button", "cite", String(number));
+  chip.type = "button";
+  chip.title = `Jump to source ${number}`;
+  chip.addEventListener("click", () => {
+    const target = sourceNodes[number - 1];
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    target.classList.add("flash");
+    setTimeout(() => target.classList.remove("flash"), 1400);
+  });
+  return chip;
 }
 
 function renderSources(container, sources) {

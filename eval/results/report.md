@@ -1,9 +1,9 @@
-# Evaluation — local + rerank
+# Evaluation — local (embeddinggemma + qwen3.5:4b), hybrid + rerank, k=4
 
 - Profile: `local` · chat `qwen3.5:4b` · embeddings `embeddinggemma`
 - Retrieval: hybrid (dense + BM25), top_k=4, rerank=on
-- Judge: not run
-- Questions: 30 · median latency 11467 ms
+- Judge: `local:qwen3.5:4b`
+- Questions: 30 · median latency 11152 ms
 
 ## Retrieval
 
@@ -13,7 +13,9 @@
 
 ## Generation
 
-_Skipped: --retrieval-only_
+| faithfulness | answer relevancy | correctness | context precision | context recall | correct refusals |
+|---|---|---|---|---|---|
+| 77% | 76% | 67% | 32% | 54% | 50% |
 
 ## Weakest retrievals
 
