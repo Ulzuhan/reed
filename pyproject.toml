@@ -70,6 +70,7 @@ select = [
     "C4",   # flake8-comprehensions
     "UP",   # pyupgrade
     "ARG",  # unused arguments
+    "BLE",  # no silent blanket excepts
     "SIM",  # flake8-simplify
     "TID",  # flake8-tidy-imports
     "RUF",  # ruff-specific
