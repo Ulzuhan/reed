@@ -46,7 +46,15 @@ def get_qdrant_client(settings: Settings) -> QdrantClient:
     path = settings.qdrant_path
     path.mkdir(parents=True, exist_ok=True)
     logger.info("using embedded Qdrant at %s", path)
-    return QdrantClient(path=str(path))
+    return QdrantClient(
+        path=str(path),
+        # Reed serialises every embedded operation with `vector_access`, but
+        # those operations legitimately run on different worker threads.
+        # Making that contract explicit also skips Qdrant's legacy SQLite
+        # threading probe, whose temporary connection is not explicitly closed
+        # and raises ResourceWarning on Python 3.13.
+        force_disable_check_same_thread=True,
+    )
 
 
 def ensure_collection(client: QdrantClient, settings: Settings, dimension: int) -> None:

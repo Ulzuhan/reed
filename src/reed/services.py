@@ -77,6 +77,8 @@ class Services:
         self._store_lock = threading.Lock()
         self._cleanup_lock = threading.Lock()
         self._cleanup_flush_lock = threading.Lock()
+        self._bootstrap_lock = threading.Lock()
+        self._bootstrap_finished = threading.Event()
         # Embedded Qdrant has no internal locking — concurrent writes corrupt
         # the store. Every vector operation goes through this; with a Qdrant
         # server, its own concurrency control applies instead.
@@ -93,11 +95,16 @@ class Services:
         self._vectorstore: QdrantVectorStore | None = None
         self._reranker: TextCrossEncoder | None = None
         self._pending_vector_cleanup: dict[str, int] = {}
+        self._bootstrap_thread: threading.Thread | None = None
+        self._bootstrap_failures = 0
+        self._bootstrap_retry_at = 0.0
+        self._bootstrap_fatal_error: Exception | None = None
+        self._closing = False
         self.ingestion_access = threading.BoundedSemaphore(settings.max_concurrent_ingestions)
         self.ask_access = asyncio.Semaphore(settings.max_concurrent_asks)
         self.rate_limiter = SlidingWindowRateLimiter()
-        # Set when the vector store could not be opened at startup, so /ready
-        # can say so instead of reporting ok for a store that serves nothing.
+        # Private diagnostic for readiness; public responses expose only a
+        # stable unavailable state while the detailed cause stays in logs.
         self.startup_error: str | None = None
 
     @property
@@ -162,9 +169,93 @@ class Services:
                     # Reads the collection config, which the local backend
                     # serves from the same structures a write mutates.
                     self._vectorstore = build_vectorstore(client, self.settings, embeddings, sparse)
-                # Whatever kept the store from opening at startup is over.
-                self.startup_error = None
             return self._vectorstore
+
+    @property
+    def vectorstore_ready(self) -> bool:
+        return self._vectorstore is not None and self.startup_error is None
+
+    @property
+    def bootstrap_fatal_error(self) -> Exception | None:
+        with self._bootstrap_lock:
+            return self._bootstrap_fatal_error
+
+    def start_vectorstore_bootstrap(self) -> bool:
+        """Start one non-blocking vector-store initialisation attempt.
+
+        Calls made while an attempt is active or its retry cooldown has not
+        elapsed are no-ops. This keeps a frequent readiness probe from filling
+        the server threadpool when a provider is black-holed.
+        """
+        with self._bootstrap_lock:
+            if self._closing or self._bootstrap_fatal_error is not None:
+                return False
+            if self.vectorstore_ready:
+                self._bootstrap_finished.set()
+                return False
+            if self._bootstrap_thread is not None and self._bootstrap_thread.is_alive():
+                return False
+            if time.monotonic() < self._bootstrap_retry_at:
+                return False
+
+            self.startup_error = "initializing"
+            self._bootstrap_finished.clear()
+            thread = threading.Thread(
+                target=self._run_vectorstore_bootstrap,
+                name="reed-vector-bootstrap",
+                daemon=True,
+            )
+            self._bootstrap_thread = thread
+            thread.start()
+            return True
+
+    def wait_for_vectorstore_bootstrap(self, timeout: float) -> bool:
+        return self._bootstrap_finished.wait(timeout)
+
+    def note_vectorstore_failure(self, exc: Exception) -> None:
+        """Invalidate a remote store that failed a live readiness probe."""
+        with self._store_lock:
+            self._vectorstore = None
+        with self._bootstrap_lock:
+            self.startup_error = f"{type(exc).__name__}: {exc}"
+            self._bootstrap_retry_at = (
+                time.monotonic() + self.settings.readiness_retry_initial_seconds
+            )
+
+    def _run_vectorstore_bootstrap(self) -> None:
+        from reed.rag.vectorstore import CollectionMismatchError
+
+        try:
+            _ = self.vectorstore
+            self.flush_pending_vector_cleanup()
+        except CollectionMismatchError as exc:
+            logger.error("vector collection is incompatible: %s", exc)
+            with self._bootstrap_lock:
+                self._bootstrap_fatal_error = exc
+                self.startup_error = f"{type(exc).__name__}: {exc}"
+        except Exception as exc:  # noqa: BLE001 — retried with bounded backoff
+            with self._bootstrap_lock:
+                self._bootstrap_failures += 1
+                delay = min(
+                    self.settings.readiness_retry_initial_seconds
+                    * (2 ** (self._bootstrap_failures - 1)),
+                    self.settings.readiness_retry_max_seconds,
+                )
+                self._bootstrap_retry_at = time.monotonic() + delay
+                self.startup_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("vector store bootstrap failed; retrying in %.1fs: %s", delay, exc)
+        else:
+            with self._bootstrap_lock:
+                self._bootstrap_failures = 0
+                self._bootstrap_retry_at = 0.0
+                self.startup_error = None
+        finally:
+            with self._bootstrap_lock:
+                self._bootstrap_thread = None
+                closing = self._closing
+            self._bootstrap_finished.set()
+            if closing:
+                self._close_dependencies()
 
     @property
     def reranker(self) -> TextCrossEncoder:
@@ -178,6 +269,17 @@ class Services:
             return self._reranker
 
     def close(self) -> None:
+        with self._bootstrap_lock:
+            self._closing = True
+            bootstrap = self._bootstrap_thread
+        if bootstrap is not None and bootstrap.is_alive():
+            bootstrap.join(timeout=1)
+            if bootstrap.is_alive():
+                logger.warning("leaving an in-flight provider bootstrap to exit with the process")
+                return
+        self._close_dependencies()
+
+    def _close_dependencies(self) -> None:
         # Lock order as documented above, so shutdown cannot close the client
         # out from under a thread that is mid-upsert.
         with self._store_lock, self.vector_access, self._lock:

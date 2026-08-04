@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from reed import __version__
+from reed.api.middleware import RequestGuardMiddleware
 from reed.api.routes import ask, documents, health
 from reed.config import Settings
 from reed.log import get_logger
@@ -51,8 +52,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "server is configured for a non-loopback host without REED_API_KEY; "
                 "restrict the network binding or configure authentication"
             )
-        await anyio.to_thread.run_sync(_open_vector_store, services)
         try:
+            await anyio.to_thread.run_sync(_recover_interrupted_state, services)
+            services.start_vectorstore_bootstrap()
+            await anyio.to_thread.run_sync(
+                services.wait_for_vectorstore_bootstrap,
+                services.settings.startup_grace_seconds,
+            )
+            if fatal := services.bootstrap_fatal_error:
+                raise fatal
             yield
         finally:
             services.close()
@@ -67,6 +75,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     # Available before startup too, so tests and tooling can reach it directly.
     app.state.services = services
+
+    # Add this first so Starlette places CORS outside the request guard. That
+    # lets CORS answer credential-free OPTIONS preflights while the guard still
+    # authenticates the actual /v1 request before reading its body.
+    app.add_middleware(RequestGuardMiddleware, services=services)
 
     origins = services.settings.cors_origin_list
     if origins:
@@ -101,16 +114,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
-def _open_vector_store(services: Services) -> None:
-    """Touch the collection at startup so misconfiguration surfaces here.
-
-    A collection built with a different embedding model can never work, so that
-    fails the boot outright. A provider that is merely unreachable does not:
-    the server keeps serving, `/ready` reports it, and the flag clears as soon
-    as the store opens — the model may well come back without a restart.
-    """
-    from reed.rag.vectorstore import CollectionMismatchError
-
+def _recover_interrupted_state(services: Services) -> None:
+    """Repair durable registry state without touching a model or network."""
     interrupted_records = services.registry.list_by_status(
         {"pending", "processing", "error", "deleting"}
     )
@@ -129,15 +134,6 @@ def _open_vector_store(services: Services) -> None:
             "%d document deletion(s) were interrupted by a restart",
             interrupted_deletions,
         )
-
-    try:
-        _ = services.vectorstore
-        services.flush_pending_vector_cleanup()
-    except CollectionMismatchError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("vector store not ready at startup: %s", exc)
-        services.startup_error = f"{type(exc).__name__}: {exc}"
 
 
 def _mount_ui(app: FastAPI) -> None:

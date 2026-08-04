@@ -2,7 +2,7 @@ name: reed
 
 services:
   api:
-    image: ghcr.io/ulzuhan/reed:latest
+    image: ${REED_IMAGE:-ghcr.io/ulzuhan/reed:latest}
     build: .
     ports:
       # Loopback-only by default. Set a reverse proxy or edit this binding if
@@ -24,14 +24,15 @@ services:
     init: true
     read_only: true
     tmpfs:
-      - /tmp
+      # Starlette's upload spool and Reed's staged copy can briefly coexist.
+      - /tmp:size=256m,mode=1777
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
 
   qdrant:
-    image: qdrant/qdrant:v1.18.2
+    image: qdrant/qdrant:v1.18.2@sha256:75eab8c4ba42096724fdcfde8b4de0b5713d529dde32f285a1f86fdcb2c9e50c
     volumes:
       - qdrant_storage:/qdrant/storage
     healthcheck:
@@ -48,7 +49,7 @@ services:
   #   docker compose exec ollama ollama pull qwen3.5:4b
   #   docker compose exec ollama ollama pull embeddinggemma
   ollama:
-    image: ollama/ollama:0.32.0
+    image: ollama/ollama:0.32.0@sha256:57f573b47f1f71ebb445789f279fe3e596a8beab182f7cf486db9205bad87c5a
     profiles: ["ollama"]
     volumes:
       - ollama_models:/root/.ollama

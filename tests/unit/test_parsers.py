@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
+from reed.ingest.parser_worker import ParseJob, _run_job, parse_file_isolated
 from reed.ingest.parsers import (
+    DocumentLimitError,
     EmptyDocumentError,
     UnsupportedFileError,
     parse_file,
@@ -82,3 +84,36 @@ def test_scanned_pdf_without_text_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(EmptyDocumentError, match="OCR"):
         parse_file(pdf)
+
+
+def test_isolated_parser_returns_sections_without_sharing_the_process(tmp_path: Path) -> None:
+    path = tmp_path / "policy.md"
+    path.write_text("# Policy\n\nExpense approval is required.", encoding="utf-8")
+
+    kind, sections = parse_file_isolated(
+        path,
+        max_pages=10,
+        max_chars=1_000,
+        timeout_seconds=5,
+        memory_mb=1_024,
+        cpu_seconds=2,
+    )
+
+    assert kind == "md"
+    assert sections[0].text.endswith("required.")
+
+
+def test_isolated_parser_is_terminated_at_its_deadline(tmp_path: Path) -> None:
+    path = tmp_path / "slow.txt"
+    path.write_text("content", encoding="utf-8")
+    job = ParseJob(
+        path=path,
+        max_pages=10,
+        max_chars=1_000,
+        memory_mb=1_024,
+        cpu_seconds=2,
+        delay_seconds=0.2,
+    )
+
+    with pytest.raises(DocumentLimitError, match="timeout"):
+        _run_job(job, timeout_seconds=0.01)

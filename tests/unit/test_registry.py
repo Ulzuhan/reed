@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -9,8 +10,12 @@ from reed.ingest.registry import DocumentRegistry
 
 
 @pytest.fixture
-def registry(tmp_path: Path) -> DocumentRegistry:
-    return DocumentRegistry(tmp_path / "reed.db")
+def registry(tmp_path: Path) -> Iterator[DocumentRegistry]:
+    instance = DocumentRegistry(tmp_path / "reed.db")
+    try:
+        yield instance
+    finally:
+        instance.close()
 
 
 def add(registry: DocumentRegistry, doc_id: str = "d-abc", sha: str = "abc123") -> None:
@@ -111,4 +116,7 @@ def test_survives_reopening(tmp_path: Path) -> None:
     first.close()
 
     second = DocumentRegistry(tmp_path / "reed.db")
-    assert second.count() == 1
+    try:
+        assert second.count() == 1
+    finally:
+        second.close()

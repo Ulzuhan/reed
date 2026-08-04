@@ -32,6 +32,7 @@ def _probe_vector_store(services: Services) -> str:
         services.qdrant.get_collections()
     except Exception as exc:  # noqa: BLE001 — health must report, never raise
         logger.warning("Qdrant readiness probe failed: %s", exc)
+        services.note_vectorstore_failure(exc)
         return "unavailable"
     return "ok"
 
@@ -54,23 +55,20 @@ def health(services: ServicesDep) -> HealthResponse:
     responses={503: {"model": HealthResponse, "description": "Dependencies are unavailable"}},
 )
 def ready(services: ServicesDep, response: Response) -> HealthResponse:
-    result = _health_response(services, retry_startup=True)
+    result = _health_response(services)
     if result.status != "ok":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return result
 
 
-def _health_response(services: Services, *, retry_startup: bool) -> HealthResponse:
+def _health_response(services: Services) -> HealthResponse:
     documents: int | None = None
     try:
         documents = services.registry.count()
-        if retry_startup and services.startup_error:
-            try:
-                _ = services.vectorstore
-                services.flush_pending_vector_cleanup()
-            except Exception as exc:  # noqa: BLE001 — readiness reports below
-                logger.warning("vector store recovery probe failed: %s", exc)
-        vector_store = "unavailable" if services.startup_error else _probe_vector_store(services)
+        services.start_vectorstore_bootstrap()
+        vector_store = (
+            _probe_vector_store(services) if services.vectorstore_ready else "unavailable"
+        )
     except Exception as exc:  # noqa: BLE001 — health must report, never raise
         logger.warning("health probe failed: %s", exc)
         vector_store = "unavailable"

@@ -16,11 +16,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from reed.ingest.chunking import Chunk, split_sections
+from reed.ingest.parser_worker import parse_file_isolated
 from reed.ingest.parsers import (
     DocumentLimitError,
     EmptyDocumentError,
     UnsupportedFileError,
-    parse_file,
 )
 from reed.ingest.registry import DocumentRecord
 from reed.log import get_logger
@@ -193,10 +193,13 @@ def _embed_and_store(services: Services, record: DocumentRecord) -> tuple[int, i
     settings = services.settings
     path = Path(record.stored_path or "")
 
-    kind, sections = parse_file(
+    kind, sections = parse_file_isolated(
         path,
         max_pages=settings.max_pdf_pages,
         max_chars=settings.max_document_chars,
+        timeout_seconds=settings.parser_timeout_seconds,
+        memory_mb=settings.parser_memory_mb,
+        cpu_seconds=settings.parser_cpu_seconds,
     )
     chunks = split_sections(
         sections,

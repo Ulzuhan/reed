@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install dev lint format type test test-unit eval eval-offline clean
+.PHONY: help install dev lint format type test test-unit test-coverage test-e2e eval eval-offline clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -26,6 +26,12 @@ test: ## Run the whole test suite
 
 test-unit: ## Run only unit tests (no embedded Qdrant)
 	uv run pytest tests/unit
+
+test-coverage: ## Run the suite with the same 85% branch-coverage gate as CI
+	uv run pytest --cov=reed --cov-branch --cov-report=term-missing:skip-covered --cov-fail-under=85
+
+test-e2e: ## Run browser E2E against a Reed server already listening on localhost:8000
+	uv run --group e2e pytest e2e --base-url http://127.0.0.1:8000
 
 eval: ## Run the full evaluation suite (retrieval + LLM judge)
 	uv run reed eval

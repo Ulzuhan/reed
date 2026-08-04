@@ -36,8 +36,9 @@ retrieval or prompting can be measured rather than guessed at.
 
 - **Hybrid retrieval** — dense embeddings and BM25 sparse vectors searched together, fused by
   Qdrant with Reciprocal Rank Fusion. Paraphrases and exact terminology both find their passage.
-- **Citations that mean something** — the model is instructed to mark every claim with `[n]`, and
-  those numbers map to the exact chunks retrieved. The UI turns them into clickable chips.
+- **Citations that mean something** — the model is instructed to mark every claim with `[n]`; Reed
+  marks unknown references invalid, flags uncited sentences and checks cited figures and verbatim
+  quotes against the exact chunks retrieved. The UI turns references into clickable chips.
 - **Calibrated refusal** — when the documents do not answer the question, saying so is the correct
   behaviour, and the evaluation suite measures whether it happens.
 - **Fully local mode** — with Ollama, no document, question or answer leaves your machine.
@@ -134,6 +135,13 @@ reverse proxy, set a strong ASCII `REED_API_KEY`, configure TLS at the proxy and
 `REED_CORS_ORIGINS` to the exact browser origins that need access. The built-in request limits are
 per process; multi-worker deployments should also rate-limit at the proxy.
 
+Document bodies are authenticated, rate-limited and size-checked before FastAPI parses multipart
+or JSON content. Parsing then runs in a spawned process with a wall-clock deadline and, on Linux,
+CPU, address-space and file-descriptor limits. The provided container adds a read-only root
+filesystem, dropped capabilities and `no-new-privileges`; third-party build/service images are
+pinned by digest and refreshed by Dependabot. For immutable deployments, set `REED_IMAGE` or edit
+Compose to use a published Reed digest instead of the convenient `latest` default.
+
 ### Upgrading an existing installation
 
 Collections created before Reed recorded its full vector fingerprint are intentionally rejected:
@@ -161,6 +169,11 @@ Ingestion is idempotent, keyed on the file's SHA-256, so uploading the same cont
 `409` with the existing document id. Deleting a document while it is still being ingested returns
 `409` too — removing it mid-run would leave its chunks behind, retrievable and citable for a
 document the API no longer knows about.
+
+Startup never waits for a full provider timeout. Vector-store initialization runs single-flight in
+the background; `/ready` stays fast, retries with exponential backoff, and costly POST endpoints
+return `503` with `Retry-After` until the store is usable. A collection fingerprint mismatch remains
+a fatal configuration error because retrying cannot make incompatible vectors safe.
 
 ### Streaming a question
 
@@ -190,8 +203,11 @@ data: {"answer":"Expenses above 75 euros require pre-approval [1].","latency_ms"
 ```
 
 The `n` in each source is the same number the model is told to cite with, which lets a client render
-`[1]` as a link to the complete retrieved passage. Reed checks that markers exist and refer to an
-available source; that is a structural check, not proof that every claim is semantically entailed.
+`[1]` as a link to the complete retrieved passage. Retrieved excerpts are serialized as untrusted
+JSON in a user-level message—never interpolated into the system message. Reed checks source ranges,
+sentence-level citation coverage, cited figures and verbatim quotes. Those deterministic checks are
+strong regression guards, not proof of semantic entailment; the optional evaluation judge measures
+deeper faithfulness.
 
 ## Evaluation
 
@@ -289,6 +305,11 @@ Every setting is a `REED_*` environment variable, or a line in `.env` (see
 | `REED_MAX_CONTEXT_CHARS` | `24000` | Hard context budget after retrieval |
 | `REED_RERANK_ENABLED` | `false` | Cross-encoder reranking; downloads ~80 MB on first use |
 | `REED_CHUNK_SIZE` / `REED_CHUNK_OVERLAP` | `1000` / `150` | Characters, not tokens |
+| `REED_MAX_UPLOAD_MB` | `25` | File limit; enforced at the ASGI byte stream and again while staging |
+| `REED_MAX_JSON_BODY_KB` | `128` | Hard body limit for `/v1/ask` before JSON parsing |
+| `REED_PARSER_TIMEOUT_SECONDS` | `30` | Wall-clock deadline for the isolated parser process |
+| `REED_PARSER_CPU_SECONDS` | `20` | Linux parser CPU limit |
+| `REED_PARSER_MEMORY_MB` | `1024` | Linux parser address-space limit |
 | `REED_API_KEY` | — | Set to require `X-API-Key` on `/v1` routes |
 | `REED_MAX_CONCURRENT_ASKS` | `8` | Per-process generation backpressure |
 | `REED_ASK_RATE_LIMIT_PER_MINUTE` | `60` | Per-client ask limit; `0` disables it |
@@ -327,13 +348,17 @@ make dev         # autoreloading server
 make lint        # ruff check + format check
 make type        # mypy --strict
 make test        # pytest (unit + integration against embedded Qdrant)
+make test-coverage # full suite with the same 85% branch-coverage gate as CI
 make eval        # the evaluation suite
 ```
 
 Tests run on the `fake` profile: deterministic stub models, real Qdrant, real BM25 sparse vectors.
 No API keys, no network, nothing to mock by hand. CI runs the same suite on Python 3.11, 3.12 and
-3.13, audits locked dependencies, then builds the image and drives an upload-then-ask round trip
-through the compose stack. Image publication has the same quality gate and emits SBOM/provenance.
+3.13, enforces 85% branch coverage, drives a real Chromium upload/ask/citation/XSS regression,
+audits locked dependencies and repository history, and runs CodeQL. It then scans the built image
+for high/critical known vulnerabilities before driving an upload-then-ask round trip through the
+compose stack. Image publication has the same quality gate and emits SBOM/provenance. See
+[`SECURITY.md`](SECURITY.md) for private reporting and the deployment threat boundary.
 
 A few of them are regression guards written against bugs that were real: concurrent ingestion
 corrupting the embedded store, a heading swallowed by a nested code fence, a document stranded

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from reed.api.app import create_app
 from reed.config import Settings
 from reed.ingest.pipeline import document_id_for, point_id_for, sha256_file
 from reed.services import Services, build_services
@@ -251,6 +252,18 @@ def test_a_zero_byte_upload_is_rejected_synchronously(client: TestClient) -> Non
 
     assert response.status_code == 422
     assert client.get("/v1/documents").json()["total"] == 0
+
+
+def test_multipart_body_is_rejected_before_fastapi_spools_it(settings: Settings) -> None:
+    limited = settings.model_copy(update={"max_upload_mb": 1})
+    with TestClient(create_app(limited)) as client:
+        response = client.post(
+            "/v1/documents",
+            files={"file": ("huge.md", b"x" * (2 * 1024 * 1024), "text/markdown")},
+        )
+
+        assert response.status_code == 413
+        assert client.get("/v1/documents").json()["total"] == 0
 
 
 def test_deleting_through_the_api(client: TestClient, tmp_path: Path) -> None:

@@ -73,8 +73,12 @@ class Settings(BaseSettings):
     chunk_size: int = Field(default=1000, ge=100, le=8000)
     chunk_overlap: int = Field(default=150, ge=0, le=2000)
     max_upload_mb: int = Field(default=25, ge=1, le=500)
+    max_multipart_overhead_kb: int = Field(default=256, ge=16, le=4_096)
     max_document_chars: int = Field(default=5_000_000, ge=1_000, le=50_000_000)
     max_pdf_pages: int = Field(default=1_000, ge=1, le=10_000)
+    parser_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
+    parser_cpu_seconds: int = Field(default=20, ge=1, le=300)
+    parser_memory_mb: int = Field(default=1_024, ge=128, le=4_096)
 
     # --- Server ---------------------------------------------------------
     data_dir: Path = Path("./data")
@@ -85,12 +89,16 @@ class Settings(BaseSettings):
     api_key: str = Field(default="", repr=False)
     cors_origins: str = ""
     provider_timeout_seconds: float = Field(default=120.0, ge=1.0, le=600.0)
+    startup_grace_seconds: float = Field(default=0.25, ge=0.0, le=2.0)
+    readiness_retry_initial_seconds: float = Field(default=2.0, ge=0.05, le=60.0)
+    readiness_retry_max_seconds: float = Field(default=60.0, ge=0.05, le=600.0)
     max_output_tokens: int = Field(default=1_024, ge=64, le=8_192)
     max_concurrent_asks: int = Field(default=8, ge=1, le=100)
     max_concurrent_ingestions: int = Field(default=2, ge=1, le=32)
     ask_rate_limit_per_minute: int = Field(default=60, ge=0, le=10_000)
     upload_rate_limit_per_minute: int = Field(default=20, ge=0, le=10_000)
     sse_queue_size: int = Field(default=64, ge=4, le=4_096)
+    max_json_body_kb: int = Field(default=128, ge=16, le=1_024)
 
     # --- Evaluation -----------------------------------------------------
     eval_judge_profile: Profile = "openai"
@@ -125,6 +133,10 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"max_context_chars ({self.max_context_chars}) must be at least "
                 f"chunk_size ({self.chunk_size})"
+            )
+        if self.readiness_retry_max_seconds < self.readiness_retry_initial_seconds:
+            raise ValueError(
+                "readiness_retry_max_seconds must be at least readiness_retry_initial_seconds"
             )
         return self
 

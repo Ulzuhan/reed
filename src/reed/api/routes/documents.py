@@ -12,13 +12,12 @@ from fastapi import (
     Depends,
     HTTPException,
     Query,
-    Request,
     Response,
     UploadFile,
     status,
 )
 
-from reed.api.deps import ServicesDep, enforce_rate_limit, require_api_key
+from reed.api.deps import ServicesDep, require_api_key
 from reed.api.schemas import DocumentInfo, DocumentList, UploadAccepted
 from reed.ingest.parsers import UnsupportedFileError, source_type
 from reed.ingest.pipeline import (
@@ -56,15 +55,8 @@ def _to_info(record: DocumentRecord) -> DocumentInfo:
 async def upload_document(
     services: ServicesDep,
     background: BackgroundTasks,
-    http_request: Request,
     file: UploadFile,
 ) -> UploadAccepted:
-    enforce_rate_limit(
-        http_request,
-        services,
-        scope="upload",
-        limit=services.settings.upload_rate_limit_per_minute,
-    )
     filename = _safe_filename(file.filename or "upload")
     try:
         source_type(Path(filename))

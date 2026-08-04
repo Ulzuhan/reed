@@ -17,7 +17,7 @@ import anyio.to_thread
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from reed.log import get_logger
-from reed.rag.prompts import build_system_prompt, no_context_answer
+from reed.rag.prompts import build_query_envelope, build_system_prompt, no_context_answer
 from reed.rag.retriever import RetrievedChunk, retrieve
 
 if TYPE_CHECKING:
@@ -85,14 +85,14 @@ class Answer:
 def build_messages(
     question: str, chunks: list[RetrievedChunk], history: list[Turn]
 ) -> list[BaseMessage]:
-    messages: list[BaseMessage] = [SystemMessage(content=build_system_prompt(chunks))]
+    messages: list[BaseMessage] = [SystemMessage(content=build_system_prompt())]
     for turn in history[-MAX_HISTORY_MESSAGES:]:
         messages.append(
             HumanMessage(content=turn.content)
             if turn.role == "user"
             else AIMessage(content=turn.content)
         )
-    messages.append(HumanMessage(content=question))
+    messages.append(HumanMessage(content=build_query_envelope(question, chunks)))
     return messages
 
 
@@ -147,7 +147,7 @@ async def answer_stream(
         return
 
     answer_text = "".join(collected)
-    citation_status, citation_warnings = audit_citations(answer_text, len(chunks))
+    citation_status, citation_warnings = audit_citations(answer_text, chunks=chunks)
     yield DoneEvent(
         answer=answer_text,
         latency_ms=_elapsed_ms(started),
@@ -211,7 +211,23 @@ def _within_context_budget(chunks: list[RetrievedChunk], max_chars: int) -> list
     return selected
 
 
-def audit_citations(answer: str, source_count: int) -> tuple[CitationStatus, list[str]]:
+def audit_citations(
+    answer: str,
+    source_count: int | None = None,
+    *,
+    chunks: list[RetrievedChunk] | None = None,
+) -> tuple[CitationStatus, list[str]]:
+    """Validate citation shape plus high-confidence grounding signals.
+
+    This deliberately does not pretend to prove semantic entailment. It does
+    catch three objective failures locally: unknown sources, uncited sentences,
+    and cited numbers or verbatim quotes absent from the referenced excerpts.
+    Deeper faithfulness remains the job of the optional evaluation judge.
+    """
+    if chunks is not None:
+        source_count = len(chunks)
+    if source_count is None:
+        raise TypeError("source_count or chunks is required")
     if source_count == 0:
         return "not_applicable", []
     references = [int(match.group(1)) for match in _CITATION.finditer(answer)]
@@ -220,4 +236,41 @@ def audit_citations(answer: str, source_count: int) -> tuple[CitationStatus, lis
         return "invalid", [f"Answer references unavailable source(s): {invalid}"]
     if not references:
         return "missing", ["The model returned no source citations"]
+
+    claims = _answer_claims(answer)
+    uncited = [claim for claim in claims if _CITATION.search(claim) is None]
+    if uncited:
+        return "missing", [f"Answer contains {len(uncited)} uncited sentence(s)"]
+
+    if chunks is not None:
+        unsupported: list[str] = []
+        for claim in claims:
+            cited = {int(match.group(1)) for match in _CITATION.finditer(claim)}
+            source_text = "\n".join(chunks[index - 1].text for index in cited).casefold()
+            plain_claim = _CITATION.sub("", claim)
+            numbers = set(re.findall(r"(?<!\w)\d[\d.,/%:-]*(?!\w)", plain_claim))
+            quotes = {
+                value.strip().casefold()
+                for value in re.findall(r'["“”]([^"“”]{4,})["“”]', plain_claim)
+            }
+            missing_numbers = sorted(
+                number for number in numbers if number.casefold() not in source_text
+            )
+            missing_quotes = sorted(quote for quote in quotes if quote not in source_text)
+            if missing_numbers or missing_quotes:
+                unsupported.append(claim[:120])
+        if unsupported:
+            return "invalid", [
+                f"Answer contains {len(unsupported)} cited sentence(s) with "
+                "numbers or quotes absent from their sources"
+            ]
     return "valid", []
+
+
+def _answer_claims(answer: str) -> list[str]:
+    """Split prose and list items into non-empty sentences for citation checks."""
+    return [
+        claim.strip(" \t-*#")
+        for claim in re.split(r"(?<=[.!?])(?:\s+|$)|\n+", answer)
+        if re.search(r"[\w\d]", claim, flags=re.UNICODE)
+    ]

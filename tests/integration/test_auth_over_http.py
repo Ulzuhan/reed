@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -15,8 +17,9 @@ SENT = {"X-API-Key": API_KEY}
 
 
 @pytest.fixture
-def guarded(settings: Settings) -> TestClient:
-    return TestClient(create_app(settings.model_copy(update={"api_key": API_KEY})))
+def guarded(settings: Settings) -> Iterator[TestClient]:
+    with TestClient(create_app(settings.model_copy(update={"api_key": API_KEY}))) as client:
+        yield client
 
 
 def test_the_right_key_is_accepted(guarded: TestClient) -> None:
@@ -42,3 +45,32 @@ def test_asking_is_guarded_too(guarded: TestClient) -> None:
     body = {"question": "anything?", "stream": False}
     assert guarded.post("/v1/ask", json=body).status_code == 401
     assert guarded.post("/v1/ask", json=body, headers=SENT).status_code == 200
+
+
+def test_auth_rejects_a_large_upload_before_body_parsing(settings: Settings) -> None:
+    guarded_settings = settings.model_copy(update={"api_key": API_KEY, "max_upload_mb": 1})
+    with TestClient(create_app(guarded_settings)) as guarded:
+        response = guarded.post(
+            "/v1/documents",
+            files={"file": ("huge.md", b"x" * (2 * 1024 * 1024), "text/markdown")},
+        )
+
+        assert response.status_code == 401
+        assert guarded.get("/v1/documents", headers=SENT).json()["total"] == 0
+
+
+def test_cors_preflight_is_answered_before_api_auth(settings: Settings) -> None:
+    guarded_settings = settings.model_copy(
+        update={"api_key": API_KEY, "cors_origins": "https://ui.example"}
+    )
+    with TestClient(create_app(guarded_settings)) as guarded:
+        response = guarded.options(
+            "/v1/documents",
+            headers={
+                "Origin": "https://ui.example",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://ui.example"

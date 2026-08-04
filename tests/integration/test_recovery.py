@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
+from threading import Event
 
 import pytest
 from fastapi.testclient import TestClient
@@ -130,13 +132,52 @@ def test_health_recovers_once_the_provider_comes_back(
 
     monkeypatch.setattr("reed.providers.build_embeddings", flaky)
 
-    with TestClient(create_app(settings)) as client:
+    retrying = settings.model_copy(
+        update={
+            "readiness_retry_initial_seconds": 0.05,
+            "readiness_retry_max_seconds": 0.05,
+        }
+    )
+    with TestClient(create_app(retrying)) as client:
         assert client.get("/ready").json()["status"] == "degraded"
 
-        # The provider is back; a successful ingestion must clear the flag
-        # rather than leaving a healthy instance reporting degraded forever.
-        client.post("/v1/documents", files={"file": ("a.md", b"# A\n\nText.", "text/markdown")})
-
+        # Readiness triggers at most one background retry after each cooldown.
+        # The provider recovers on the third attempt without restarting Reed.
+        deadline = time.monotonic() + 2
         body = client.get("/ready").json()
+        while body["status"] != "ok" and time.monotonic() < deadline:
+            time.sleep(0.06)
+            body = client.get("/ready").json()
+
         assert body["status"] == "ok"
         assert body["vector_store"] == "ok"
+        assert calls["n"] == 3
+
+
+def test_readiness_probes_never_duplicate_a_slow_bootstrap(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered = Event()
+    release = Event()
+    calls = {"n": 0}
+
+    def slow_failure(*_: object, **__: object) -> None:
+        calls["n"] += 1
+        entered.set()
+        release.wait(timeout=2)
+        raise ConnectionError("provider unavailable")
+
+    monkeypatch.setattr("reed.providers.build_embeddings", slow_failure)
+    immediate = settings.model_copy(update={"startup_grace_seconds": 0})
+
+    try:
+        with TestClient(create_app(immediate)) as client:
+            assert entered.wait(timeout=1)
+            responses = [client.get("/ready") for _ in range(20)]
+            assert all(response.status_code == 503 for response in responses)
+            assert calls["n"] == 1
+            services = client.app.state.services  # type: ignore[attr-defined]
+            release.set()
+            assert services.wait_for_vectorstore_bootstrap(timeout=1)
+    finally:
+        release.set()

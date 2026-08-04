@@ -46,6 +46,11 @@ dev = [
     "ruff>=0.14",
     "mypy>=1.18",
     "pip-audit>=2.9",
+    "pytest-cov>=6,<8",
+]
+
+e2e = [
+    "pytest-playwright>=0.6,<1",
 ]
 
 [build-system]
@@ -98,4 +103,17 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
     "integration: tests that exercise the embedded Qdrant + real sparse embeddings",
+    "e2e: browser tests that require a running Reed server",
 ]
+
+[tool.coverage.run]
+branch = true
+source = ["reed"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+show_missing = true
+skip_covered = true

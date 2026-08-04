@@ -7,10 +7,10 @@ import contextlib
 import uuid
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 
-from reed.api.deps import ServicesDep, enforce_rate_limit, require_api_key
+from reed.api.deps import ServicesDep, require_api_key
 from reed.api.schemas import AskRequest, AskResponse, Source
 from reed.api.sse import PING, SSE_HEADERS, sse_event
 from reed.log import get_logger
@@ -150,15 +150,8 @@ async def _sse_body(services: Services, request: AskRequest) -> AsyncIterator[st
 )
 async def ask(
     services: ServicesDep,
-    http_request: Request,
     request: AskRequest,
 ) -> StreamingResponse | AskResponse:
-    enforce_rate_limit(
-        http_request,
-        services,
-        scope="ask",
-        limit=services.settings.ask_rate_limit_per_minute,
-    )
     if request.stream:
         return StreamingResponse(
             _sse_body(services, request),
