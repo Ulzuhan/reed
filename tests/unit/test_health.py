@@ -14,9 +14,19 @@ def test_health_reports_the_active_profile(client: TestClient) -> None:
     assert body["version"] == __version__
     assert body["profile"] == "fake"
     assert body["chat_model"] == "fake-chat"
+    assert body["vector_store"] == "not_checked"
 
 
 def test_openapi_schema_is_generated(client: TestClient) -> None:
     schema = client.get("/openapi.json").json()
     assert schema["info"]["title"] == "Reed"
     assert "/health" in schema["paths"]
+    assert "/ready" in schema["paths"]
+
+
+def test_ui_responses_have_a_content_security_policy(client: TestClient) -> None:
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "default-src 'self'" in response.headers["content-security-policy"]
+    assert response.headers["x-content-type-options"] == "nosniff"

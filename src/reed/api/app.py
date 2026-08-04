@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import anyio.to_thread
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -44,6 +44,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             services.settings.chat_model_name,
             services.settings.embed_model_name,
         )
+        if services.settings.host not in {"127.0.0.1", "localhost", "::1"} and not (
+            services.settings.api_key
+        ):
+            logger.warning(
+                "server is configured for a non-loopback host without REED_API_KEY; "
+                "restrict the network binding or configure authentication"
+            )
         await anyio.to_thread.run_sync(_open_vector_store, services)
         try:
             yield
@@ -66,10 +73,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
-            allow_credentials=True,
+            allow_credentials="*" not in origins,
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    @app.middleware("http")
+    async def security_headers(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; script-src 'self'; style-src 'self'; "
+                "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
+                "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+            )
+        return response
 
     app.include_router(health.router)
     app.include_router(documents.router)
@@ -83,19 +106,33 @@ def _open_vector_store(services: Services) -> None:
 
     A collection built with a different embedding model can never work, so that
     fails the boot outright. A provider that is merely unreachable does not:
-    the server keeps serving, `/health` reports it, and the flag clears as soon
+    the server keeps serving, `/ready` reports it, and the flag clears as soon
     as the store opens — the model may well come back without a restart.
     """
     from reed.rag.vectorstore import CollectionMismatchError
 
+    interrupted_records = services.registry.list_by_status(
+        {"pending", "processing", "error", "deleting"}
+    )
+    for record in interrupted_records:
+        services.schedule_vector_cleanup(record.id)
     interrupted = services.registry.fail_interrupted(
         "interrupted by a restart — re-upload the file"
     )
     if interrupted:
         logger.warning("%d document(s) were left mid-ingestion by a restart", interrupted)
+    interrupted_deletions = services.registry.fail_interrupted_deletions(
+        "deletion was interrupted by a restart — retry deletion"
+    )
+    if interrupted_deletions:
+        logger.warning(
+            "%d document deletion(s) were interrupted by a restart",
+            interrupted_deletions,
+        )
 
     try:
         _ = services.vectorstore
+        services.flush_pending_vector_cleanup()
     except CollectionMismatchError:
         raise
     except Exception as exc:  # noqa: BLE001

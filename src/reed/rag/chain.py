@@ -7,16 +7,17 @@ what users get.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import anyio.to_thread
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from reed.log import get_logger
-from reed.rag.prompts import NO_CONTEXT_ANSWER, build_system_prompt
+from reed.rag.prompts import build_system_prompt, no_context_answer
 from reed.rag.retriever import RetrievedChunk, retrieve
 
 if TYPE_CHECKING:
@@ -27,6 +28,13 @@ logger = get_logger(__name__)
 # How many prior turns to replay. Enough for follow-ups ("and for contractors?")
 # without letting an old topic drown out the current question.
 MAX_HISTORY_MESSAGES = 6
+CitationStatus = Literal["valid", "missing", "invalid", "not_applicable"]
+_CITATION = re.compile(r"\[(\d+)\]")
+_FOLLOW_UP = re.compile(
+    r"^(?:and\b|also\b|but\b|what about\b|how about\b|y\b|también\b|pero\b|"
+    r"qué hay de\b|y si\b|et\b|mais\b|und\b|aber\b)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +52,8 @@ class DoneEvent:
     answer: str
     latency_ms: int
     context_chars: int
+    citation_status: CitationStatus
+    citation_warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +78,8 @@ class Answer:
     sources: list[RetrievedChunk] = field(default_factory=list)
     latency_ms: int = 0
     error: str | None = None
+    citation_status: CitationStatus = "not_applicable"
+    citation_warnings: list[str] = field(default_factory=list)
 
 
 def build_messages(
@@ -91,30 +103,35 @@ async def answer_stream(
     top_k: int | None = None,
 ) -> AsyncIterator[StreamEvent]:
     started = time.perf_counter()
+    history = history or []
 
     try:
         # Retrieval is synchronous (Qdrant client, local ONNX reranker), so it
         # goes to a worker thread rather than stalling the event loop.
-        chunks = await anyio.to_thread.run_sync(lambda: retrieve(services, question, top_k))
-    except Exception as exc:
+        retrieval_query = build_retrieval_query(question, history)
+        chunks = await anyio.to_thread.run_sync(lambda: retrieve(services, retrieval_query, top_k))
+        chunks = _within_context_budget(chunks, services.settings.max_context_chars)
+    except Exception:
         # Anything from the vector store or the reranker: report it as a stream
         # event rather than as a dead connection.
         logger.exception("retrieval failed")
-        yield ErrorEvent(message=f"Retrieval failed: {type(exc).__name__}: {exc}")
+        yield ErrorEvent(message="Retrieval is temporarily unavailable")
         return
 
     yield SourcesEvent(chunks=chunks)
 
     if not chunks:
-        yield TokenEvent(text=NO_CONTEXT_ANSWER)
+        empty_answer = no_context_answer(question)
+        yield TokenEvent(text=empty_answer)
         yield DoneEvent(
-            answer=NO_CONTEXT_ANSWER,
+            answer=empty_answer,
             latency_ms=_elapsed_ms(started),
             context_chars=0,
+            citation_status="not_applicable",
         )
         return
 
-    messages = build_messages(question, chunks, history or [])
+    messages = build_messages(question, chunks, history)
     collected: list[str] = []
 
     try:
@@ -123,16 +140,20 @@ async def answer_stream(
             if text:
                 collected.append(text)
                 yield TokenEvent(text=text)
-    except Exception as exc:
+    except Exception:
         # A provider timing out mid-stream still has to reach the user.
         logger.exception("generation failed")
-        yield ErrorEvent(message=f"Generation failed: {type(exc).__name__}: {exc}")
+        yield ErrorEvent(message="Answer generation is temporarily unavailable")
         return
 
+    answer_text = "".join(collected)
+    citation_status, citation_warnings = audit_citations(answer_text, len(chunks))
     yield DoneEvent(
-        answer="".join(collected),
+        answer=answer_text,
         latency_ms=_elapsed_ms(started),
         context_chars=sum(len(chunk.text) for chunk in chunks),
+        citation_status=citation_status,
+        citation_warnings=citation_warnings,
     )
 
 
@@ -150,6 +171,8 @@ async def answer(
         elif isinstance(event, DoneEvent):
             result.text = event.answer
             result.latency_ms = event.latency_ms
+            result.citation_status = event.citation_status
+            result.citation_warnings = event.citation_warnings
         elif isinstance(event, ErrorEvent):
             result.error = event.message
     return result
@@ -165,3 +188,36 @@ def _text_of(chunk: BaseMessage) -> str:
 
 def _elapsed_ms(started: float) -> int:
     return int((time.perf_counter() - started) * 1000)
+
+
+def build_retrieval_query(question: str, history: list[Turn]) -> str:
+    """Resolve short follow-ups with the most recent user question."""
+    if len(question) > 300 or _FOLLOW_UP.search(question.strip()) is None:
+        return question
+    previous = next((turn.content for turn in reversed(history) if turn.role == "user"), "")
+    if not previous:
+        return question
+    return f"Previous user question: {previous[-2_000:]}\nCurrent question: {question}"
+
+
+def _within_context_budget(chunks: list[RetrievedChunk], max_chars: int) -> list[RetrievedChunk]:
+    selected: list[RetrievedChunk] = []
+    used = 0
+    for chunk in chunks:
+        if used + len(chunk.text) > max_chars:
+            continue
+        selected.append(chunk)
+        used += len(chunk.text)
+    return selected
+
+
+def audit_citations(answer: str, source_count: int) -> tuple[CitationStatus, list[str]]:
+    if source_count == 0:
+        return "not_applicable", []
+    references = [int(match.group(1)) for match in _CITATION.finditer(answer)]
+    invalid = sorted({reference for reference in references if not 1 <= reference <= source_count})
+    if invalid:
+        return "invalid", [f"Answer references unavailable source(s): {invalid}"]
+    if not references:
+        return "missing", ["The model returned no source citations"]
+    return "valid", []

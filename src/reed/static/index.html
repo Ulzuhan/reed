@@ -32,11 +32,11 @@
             <h2>Documents</h2>
             <span class="counter" id="doc-counter">0</span>
           </div>
-          <ul id="doc-list" class="doc-list"></ul>
+          <ul id="doc-list" class="doc-list" aria-live="polite"></ul>
           <p class="empty" id="doc-empty">Nothing ingested yet.</p>
         </div>
 
-        <footer class="status-bar">
+        <footer class="status-bar" role="status" aria-live="polite">
           <span class="dot" id="status-dot"></span>
           <span id="status-text">connecting…</span>
           <button class="link-button" id="settings-button" type="button">API key</button>
@@ -56,9 +56,12 @@
         </div>
 
         <form class="composer" id="composer">
+          <label class="sr-only" for="question">Question</label>
           <textarea
             id="question"
             rows="1"
+            maxlength="4000"
+            required
             placeholder="Ask about your documents…"
             autocomplete="off"
           ></textarea>
@@ -70,8 +73,18 @@
     <dialog id="settings-dialog">
       <form method="dialog" class="settings">
         <h2>API key</h2>
-        <p>Only needed when the server runs with <code>REED_API_KEY</code> set.</p>
-        <input type="password" id="api-key-input" placeholder="X-API-Key" autocomplete="off" />
+        <p id="api-key-help">
+          Only needed when the server runs with <code>REED_API_KEY</code> set. Kept for this tab
+          only.
+        </p>
+        <label class="sr-only" for="api-key-input">API key</label>
+        <input
+          type="password"
+          id="api-key-input"
+          placeholder="X-API-Key"
+          autocomplete="off"
+          aria-describedby="api-key-help"
+        />
         <menu>
           <button value="cancel">Cancel</button>
           <button value="save" id="save-key" class="primary">Save</button>

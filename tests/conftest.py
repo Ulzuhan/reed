@@ -18,7 +18,7 @@ def settings(tmp_path: Path) -> Settings:
         profile="fake",
         data_dir=tmp_path / "data",
         collection="test_chunks",
-        _env_file=None,  # type: ignore[call-arg]
+        _env_file=None,
     )
 
 

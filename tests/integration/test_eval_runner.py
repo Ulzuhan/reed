@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from reed.config import Settings
 from reed.evals.runner import run_evaluation
@@ -95,6 +96,23 @@ def test_retrieval_only_run_scores_every_question(
     assert report.judge_model is None
 
 
+def test_retrieval_only_never_constructs_the_chat_model(
+    settings: Settings,
+    corpus: Path,
+    golden: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "reed.providers.build_chat_model",
+        lambda *_, **__: pytest.fail("retrieval-only must not construct a chat model"),
+    )
+
+    report = run(settings, corpus, golden, tmp_path / "results")
+
+    assert len(report.results) == 3
+
+
 def test_a_readme_file_is_not_treated_as_a_corpus_document(
     settings: Settings, corpus: Path, golden: Path, tmp_path: Path
 ) -> None:
@@ -121,7 +139,10 @@ def test_report_is_written_in_both_formats(
     markdown, raw = report.write(tmp_path / "results")
 
     assert "## Retrieval" in markdown.read_text(encoding="utf-8")
-    assert json.loads(raw.read_text(encoding="utf-8"))["top_k"] == settings.top_k
+    parsed = json.loads(raw.read_text(encoding="utf-8"))
+    assert parsed["top_k"] == settings.top_k
+    assert parsed["provenance"]["dataset"]["corpus_sha256"]
+    assert parsed["provenance"]["versions"]["python"]
 
 
 def test_label_defaults_to_the_configuration(
@@ -143,6 +164,13 @@ def test_top_k_override_reaches_retrieval(
     assert all(len(result.retrieved_docs) <= 1 for result in report.results)
 
 
+def test_invalid_top_k_override_is_revalidated(
+    settings: Settings, corpus: Path, golden: Path, tmp_path: Path
+) -> None:
+    with pytest.raises(ValidationError, match="top_k"):
+        run(settings, corpus, golden, tmp_path / "results", top_k=0)
+
+
 def test_an_empty_corpus_fails_loudly(settings: Settings, golden: Path, tmp_path: Path) -> None:
     empty = tmp_path / "empty"
     empty.mkdir()
@@ -160,14 +188,21 @@ def test_a_dead_chat_provider_is_reported_not_scored(
 ) -> None:
     class DeadModel:
         async def astream(self, *_: object, **__: object):  # type: ignore[no-untyped-def]
+            if "__yield__" in __:
+                yield ""
             raise RuntimeError("model 'nope' not found")
-            yield  # pragma: no cover — makes this an async generator
 
     monkeypatch.setattr("reed.providers.build_chat_model", lambda *_, **__: DeadModel())
 
-    report = run(settings, corpus, golden, tmp_path / "results")
+    report = run_evaluation(
+        retrieval_only=False,
+        corpus_dir=corpus,
+        golden_path=golden,
+        results_dir=tmp_path / "results",
+        settings=settings,
+    )
 
     # Otherwise a broken provider reads as "the model answers badly".
     assert len(report.failures) == len(report.results)
-    assert "not found" in report.failures[0].error
+    assert report.failures[0].error == "Answer generation is temporarily unavailable"
     assert "failed outright" in report.to_markdown()

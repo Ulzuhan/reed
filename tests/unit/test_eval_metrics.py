@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 
 from reed.evals.dataset import GoldenQuestion, load_golden
-from reed.evals.judge import JudgeScores, _normalise
+from reed.evals.judge import (
+    ChunkRelevance,
+    Judge,
+    JudgeScores,
+    PrecisionVerdict,
+    _normalise,
+)
 from reed.evals.report import QuestionResult, build_report
 from reed.evals.retrieval import RetrievalOutcome, aggregate, score
 from reed.rag.retriever import RetrievedChunk
@@ -132,6 +138,39 @@ def test_ratings_normalise_to_zero_one() -> None:
     assert _normalise(0) == 0.0
 
 
+@pytest.mark.asyncio
+async def test_failed_judge_results_are_retried_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    judge = Judge(model=object(), model_name="test", cache_dir=tmp_path)  # type: ignore[arg-type]
+    attempts = 0
+
+    async def fail(*_: object) -> JudgeScores:
+        nonlocal attempts
+        attempts += 1
+        return JudgeScores(notes="judge call failed")
+
+    monkeypatch.setattr(judge, "_score_uncached", fail)
+    await judge.score(question(), "answer", ["context"])
+    await judge.score(question(), "answer", ["context"])
+
+    assert attempts == 2
+    assert list(tmp_path.glob("*.json")) == []
+
+
+@pytest.mark.asyncio
+async def test_precision_requires_a_verdict_for_every_excerpt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    judge = Judge(model=object(), model_name="test")  # type: ignore[arg-type]
+
+    async def incomplete(*_: object) -> PrecisionVerdict:
+        return PrecisionVerdict(excerpts=[ChunkRelevance(index=1, relevant=True)])
+
+    monkeypatch.setattr(judge, "_ask", incomplete)
+    assert await judge._precision("question", ["one", "two"]) is None
+
+
 # -- report --------------------------------------------------------------
 
 
@@ -176,6 +215,15 @@ def test_generation_averages_skip_missing_scores() -> None:
 
     assert report.generation["faithfulness"] == pytest.approx(0.75)  # type: ignore[attr-defined]
     assert report.generation["correctness"] is None  # type: ignore[attr-defined]
+    assert report.generation_coverage["faithfulness"] == {  # type: ignore[attr-defined]
+        "scored": 2,
+        "total": 3,
+    }
+
+
+def test_even_latency_samples_use_the_real_median() -> None:
+    report = make_report([result(latency_ms=100), result(id="q-002", latency_ms=200)])
+    assert report.median_latency_ms == 150  # type: ignore[attr-defined]
 
 
 def test_markdown_says_why_generation_was_skipped() -> None:
@@ -206,6 +254,7 @@ def test_report_json_round_trips(tmp_path: Path) -> None:
     assert markdown.exists()
     parsed = json.loads(raw.read_text(encoding="utf-8"))
     assert parsed["retrieval"]["hit_at_1"] == 1.0
+    assert parsed["generation_coverage"]["faithfulness"] == {"scored": 1, "total": 1}
     assert parsed["results"][0]["id"] == "q-001"
 
 

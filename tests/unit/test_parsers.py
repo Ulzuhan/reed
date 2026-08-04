@@ -45,6 +45,14 @@ def test_empty_file_is_rejected(tmp_path: Path) -> None:
         parse_file(path)
 
 
+def test_extracted_text_has_a_hard_limit(tmp_path: Path) -> None:
+    path = tmp_path / "large.txt"
+    path.write_text("x" * 101, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="extracted-text limit"):
+        parse_file(path, max_chars=100)
+
+
 def test_pdf_pages_become_numbered_sections(tmp_path: Path) -> None:
     pdf = write_pdf(
         tmp_path / "handbook.pdf",
@@ -60,6 +68,13 @@ def test_pdf_pages_become_numbered_sections(tmp_path: Path) -> None:
     assert [s.page for s in sections] == [1, 2]
     assert "Expenses above 75 euros" in sections[0].text
     assert "on-call" in sections[1].text
+
+
+def test_pdf_page_count_has_a_hard_limit(tmp_path: Path) -> None:
+    pdf = write_pdf(tmp_path / "long.pdf", ["page one has enough text"] * 2)
+
+    with pytest.raises(ValueError, match="configured maximum"):
+        parse_file(pdf, max_pages=1)
 
 
 def test_scanned_pdf_without_text_is_rejected(tmp_path: Path) -> None:

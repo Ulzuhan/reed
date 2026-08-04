@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
@@ -10,8 +12,8 @@ from reed.config import (
 )
 
 
-def make(**kwargs: object) -> Settings:
-    return Settings(_env_file=None, **kwargs)  # type: ignore[call-arg,arg-type]
+def make(**kwargs: Any) -> Settings:
+    return Settings(_env_file=None, **kwargs)
 
 
 def test_openai_profile_requires_a_key() -> None:
@@ -51,6 +53,22 @@ def test_overlap_must_be_smaller_than_chunk_size() -> None:
         make(chunk_size=500, chunk_overlap=500)
 
 
+def test_context_budget_must_fit_at_least_one_chunk() -> None:
+    with pytest.raises(ValidationError, match="max_context_chars"):
+        make(chunk_size=2_000, max_context_chars=1_000)
+
+
+def test_api_keys_have_one_portable_wire_encoding() -> None:
+    with pytest.raises(ValidationError, match="ASCII"):
+        make(api_key="contraseña")
+
+
+def test_assignment_cannot_bypass_validation() -> None:
+    settings = make(profile="fake")
+    with pytest.raises(ValidationError):
+        settings.port = 70_000
+
+
 def test_fetch_k_only_applies_when_reranking() -> None:
     assert make(top_k=4, fetch_k=20, rerank_enabled=False).effective_fetch_k == 4
     assert make(top_k=4, fetch_k=20, rerank_enabled=True).effective_fetch_k == 20
@@ -64,7 +82,7 @@ def test_paths_derive_from_data_dir(tmp_path: object) -> None:
 
 
 def test_cors_origins_are_split_and_trimmed() -> None:
-    settings = make(cors_origins="http://a.test, http://b.test ,")
+    settings = make(cors_origins="http://a.test, http://b.test, http://a.test ,")
     assert settings.cors_origin_list == ["http://a.test", "http://b.test"]
 
 

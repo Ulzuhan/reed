@@ -5,7 +5,9 @@ services:
     image: ghcr.io/ulzuhan/reed:latest
     build: .
     ports:
-      - "8000:8000"
+      # Loopback-only by default. Set a reverse proxy or edit this binding if
+      # remote clients need access, and configure REED_API_KEY first.
+      - "127.0.0.1:${REED_PORT:-8000}:8000"
     environment:
       REED_QDRANT_URL: http://qdrant:6333
       REED_PROFILE: ${REED_PROFILE:-openai}
@@ -19,6 +21,14 @@ services:
       qdrant:
         condition: service_healthy
     restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
   qdrant:
     image: qdrant/qdrant:v1.18.2
@@ -38,7 +48,7 @@ services:
   #   docker compose exec ollama ollama pull qwen3.5:4b
   #   docker compose exec ollama ollama pull embeddinggemma
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.32.0
     profiles: ["ollama"]
     volumes:
       - ollama_models:/root/.ollama

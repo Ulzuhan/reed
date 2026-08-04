@@ -42,18 +42,19 @@ def _splitter(
     )
 
 
-def _real_headings(text: str) -> list[str]:
-    """Every heading in a whole document, ignoring fenced code blocks.
+def _real_heading_spans(text: str) -> list[tuple[int, str]]:
+    """Insertion offsets and titles for headings outside fenced code.
 
-    A shell comment inside a fence is not a heading, and mislabelling one as a
-    section poisons every chunk that follows it. This has to run on the whole
-    document: the splitter routinely puts a fence's opening and closing lines
-    in different chunks, so neither chunk alone can tell it is inside code.
+    This has to scan the whole document: the splitter routinely puts a fence's
+    opening and closing lines in different chunks, so neither chunk alone can
+    tell whether a shell comment is really a heading.
     """
-    headings: list[str] = []
+    headings: list[tuple[int, str]] = []
     fence: str | None = None
+    offset = 0
 
-    for line in text.splitlines():
+    for raw_line in text.splitlines(keepends=True):
+        line = raw_line.rstrip("\r\n")
         marker = _FENCE.match(line)
         if marker is not None:
             delimiter = marker.group(1)
@@ -61,9 +62,11 @@ def _real_headings(text: str) -> list[str]:
                 fence = delimiter
             elif _closes(delimiter, fence) and not marker.group(2).strip():
                 fence = None
-            continue
-        if fence is None and (heading := _HEADING.match(line)):
-            headings.append(heading.group(2).strip())
+        elif fence is None and (heading := _HEADING.match(line)):
+            # Put the marker at the end of the heading line. Prefixing the line
+            # would hide Markdown's heading separator from the splitter.
+            headings.append((offset + len(line), heading.group(2).strip()))
+        offset += len(raw_line)
 
     return headings
 
@@ -80,10 +83,19 @@ def _closes(delimiter: str, opening: str) -> bool:
     return delimiter[0] == opening[0] and len(delimiter) >= len(opening)
 
 
-def _headings_in(chunk: str, expected: list[str]) -> list[str]:
-    """Headings found in a chunk, filtered to the ones the document really has."""
-    found = [match.group(2).strip() for match in _HEADING.finditer(chunk)]
-    return [title for title in found if title in expected]
+def _mark_real_headings(text: str, spans: list[tuple[int, str]]) -> tuple[str, re.Pattern[str]]:
+    # Uploaded text can contain arbitrary private-use characters. Grow the
+    # prefix until it is absent so user content can never impersonate one of
+    # our internal markers or produce an out-of-range heading index.
+    prefix = "\ue000reed-heading-"
+    while prefix in text:
+        prefix = f"\ue000{prefix}"
+    marker_pattern = re.compile(rf"{re.escape(prefix)}(\d+)\ue001")
+    marked = text
+    for index, (offset, _) in reversed(list(enumerate(spans))):
+        marker = f"{prefix}{index}\ue001"
+        marked = f"{marked[:offset]}{marker}{marked[offset:]}"
+    return marked, marker_pattern
 
 
 def split_sections(
@@ -104,11 +116,24 @@ def split_sections(
     chunks: list[Chunk] = []
 
     for section in sections:
-        expected = _real_headings(section.text) if source_type == "md" else []
+        spans = _real_heading_spans(section.text) if source_type == "md" else []
+        headings_by_index = [title for _, title in spans]
+        if spans:
+            text_to_split, heading_marker = _mark_real_headings(section.text, spans)
+        else:
+            text_to_split, heading_marker = section.text, None
         current: str | None = None
 
-        for piece in splitter.split_text(section.text):
-            headings = _headings_in(piece, expected) if expected else []
+        for marked_piece in splitter.split_text(text_to_split):
+            heading_indices = (
+                [int(match.group(1)) for match in heading_marker.finditer(marked_piece)]
+                if heading_marker is not None
+                else []
+            )
+            headings = [headings_by_index[index] for index in heading_indices]
+            piece = (
+                heading_marker.sub("", marked_piece) if heading_marker is not None else marked_piece
+            )
             # A chunk that opens a section belongs to it, not to the previous
             # one; a chunk spanning several hands the last one to its successor.
             label = headings[0] if headings else current

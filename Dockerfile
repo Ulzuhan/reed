@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.13-slim AS builder
+FROM python:3.13.14-slim-bookworm AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.1 /uv /uvx /bin/
 
@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
 
-FROM python:3.13-slim
+FROM python:3.13.14-slim-bookworm
 
 RUN useradd --create-home --uid 1000 reed
 
@@ -41,7 +41,7 @@ EXPOSE 8000
 
 # python is already here; adding curl just for a health check would be waste.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"]
+    CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=4).status == 200 else 1)"]
 
 CMD ["uvicorn", "reed.api.app:create_app", "--factory", \
      "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]

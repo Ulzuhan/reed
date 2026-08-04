@@ -6,7 +6,10 @@ network call and the `fake` profile stays instant.
 
 from __future__ import annotations
 
+import asyncio
 import threading
+import time
+from collections import defaultdict, deque
 from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
@@ -24,6 +27,45 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+class SlidingWindowRateLimiter:
+    """Small in-process limiter for the costly public endpoints.
+
+    Deployments with multiple workers should still enforce a shared limit at
+    their reverse proxy. This limiter makes the safe single-process default
+    resistant to accidental or trivial request floods.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._events: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+        self._checks = 0
+
+    def allow(self, scope: str, client: str, limit: int, *, now: float | None = None) -> bool:
+        if limit == 0:
+            return True
+        current = time.monotonic() if now is None else now
+        cutoff = current - 60.0
+        key = (scope, client)
+        with self._lock:
+            self._checks += 1
+            if self._checks % 1_000 == 0:
+                self._discard_idle(cutoff)
+            events = self._events[key]
+            while events and events[0] <= cutoff:
+                events.popleft()
+            if len(events) >= limit:
+                return False
+            events.append(current)
+            return True
+
+    def _discard_idle(self, cutoff: float) -> None:
+        for key, events in list(self._events.items()):
+            while events and events[0] <= cutoff:
+                events.popleft()
+            if not events:
+                del self._events[key]
+
+
 class Services:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -33,6 +75,8 @@ class Services:
         # only needs the registry.
         self._lock = threading.Lock()
         self._store_lock = threading.Lock()
+        self._cleanup_lock = threading.Lock()
+        self._cleanup_flush_lock = threading.Lock()
         # Embedded Qdrant has no internal locking — concurrent writes corrupt
         # the store. Every vector operation goes through this; with a Qdrant
         # server, its own concurrency control applies instead.
@@ -48,7 +92,11 @@ class Services:
         self._qdrant: QdrantClient | None = None
         self._vectorstore: QdrantVectorStore | None = None
         self._reranker: TextCrossEncoder | None = None
-        # Set when the vector store could not be opened at startup, so /health
+        self._pending_vector_cleanup: dict[str, int] = {}
+        self.ingestion_access = threading.BoundedSemaphore(settings.max_concurrent_ingestions)
+        self.ask_access = asyncio.Semaphore(settings.max_concurrent_asks)
+        self.rate_limiter = SlidingWindowRateLimiter()
+        # Set when the vector store could not be opened at startup, so /ready
         # can say so instead of reporting ok for a store that serves nothing.
         self.startup_error: str | None = None
 
@@ -141,6 +189,35 @@ class Services:
                 self._qdrant.close()
                 self._qdrant = None
             self._vectorstore = None
+
+    def schedule_vector_cleanup(self, doc_id: str) -> None:
+        with self._cleanup_lock:
+            self._pending_vector_cleanup[doc_id] = self._pending_vector_cleanup.get(doc_id, 0) + 1
+
+    def flush_pending_vector_cleanup(self) -> None:
+        """Delete points left by failed or interrupted ingestion attempts.
+
+        Cleanup happens before retrieval and after startup. If Qdrant is still
+        unavailable the ids remain queued and the caller fails instead of
+        querying a store known to contain uncommitted points.
+        """
+        with self._cleanup_flush_lock:
+            with self._cleanup_lock:
+                pending = dict(self._pending_vector_cleanup)
+            if not pending:
+                return
+
+            from reed.rag.vectorstore import delete_document_points
+
+            client = self.qdrant
+            with self.vector_access:
+                if client.collection_exists(self.settings.collection):
+                    for doc_id in pending:
+                        delete_document_points(client, self.settings, doc_id)
+            with self._cleanup_lock:
+                for doc_id, generation in pending.items():
+                    if self._pending_vector_cleanup.get(doc_id) == generation:
+                        del self._pending_vector_cleanup[doc_id]
 
 
 def build_services(settings: Settings | None = None) -> Services:

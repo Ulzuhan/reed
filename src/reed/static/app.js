@@ -36,9 +36,17 @@ const SAMPLE_QUESTIONS = [
 const history = [];
 let busy = false;
 
+// Migrate once from the older persistent storage. A tab-scoped credential
+// limits exposure to future same-origin scripts and disappears when the tab closes.
+const legacyApiKey = localStorage.getItem("reed.apiKey");
+if (legacyApiKey && !sessionStorage.getItem("reed.apiKey")) {
+  sessionStorage.setItem("reed.apiKey", legacyApiKey);
+}
+localStorage.removeItem("reed.apiKey");
+
 /* ------------------------------------------------------------------ utils */
 
-const apiKey = () => localStorage.getItem("reed.apiKey") || "";
+const apiKey = () => sessionStorage.getItem("reed.apiKey") || "";
 
 function headers(extra = {}) {
   const key = apiKey();
@@ -75,10 +83,15 @@ const scrollToBottom = () => {
 
 async function refreshStatus() {
   try {
-    const health = await api("/health");
-    const ok = health.status === "ok";
+    const response = await fetch("/ready", { headers: headers() });
+    const health = await response.json();
+    const ok = response.ok && health.status === "ok";
     els.statusDot.className = `dot ${ok ? "ok" : "bad"}`;
-    els.statusText.textContent = `${health.profile} · ${health.chat_model}`;
+    els.statusText.textContent = health.profile
+      ? `${health.profile} · ${health.chat_model}`
+      : ok
+        ? "ready · details protected"
+        : "degraded · details protected";
     els.statusText.title = ok ? "" : health.vector_store;
   } catch (error) {
     els.statusDot.className = "dot bad";
@@ -91,10 +104,10 @@ async function refreshStatus() {
 
 let pollTimer = null;
 
-function renderDocuments(documents) {
+function renderDocuments(documents, total = documents.length) {
   els.docList.replaceChildren();
   els.docEmpty.hidden = documents.length > 0;
-  els.docCounter.textContent = String(documents.length);
+  els.docCounter.textContent = documents.length === total ? String(total) : `${documents.length}/${total}`;
 
   for (const doc of documents) {
     const item = el("li", "doc");
@@ -103,10 +116,12 @@ function renderDocuments(documents) {
 
     const remove = el("button", "doc-remove", "×");
     remove.title = "Remove";
+    remove.type = "button";
+    remove.setAttribute("aria-label", `Remove ${doc.filename}`);
     remove.addEventListener("click", () => removeDocument(doc.id));
     item.append(remove);
 
-    const busyDoc = doc.status === "pending" || doc.status === "processing";
+    const busyDoc = doc.status === "pending" || doc.status === "processing" || doc.status === "deleting";
     const meta = el("span", `doc-meta${doc.status === "error" ? " error" : ""}`);
     if (busyDoc) {
       meta.append(el("span", "spin", "⟳"), document.createTextNode(` ${doc.status}…`));
@@ -120,21 +135,32 @@ function renderDocuments(documents) {
     els.docList.append(item);
   }
 
-  const stillWorking = documents.some((d) => d.status === "pending" || d.status === "processing");
+  const stillWorking = documents.some((d) =>
+    ["pending", "processing", "deleting"].includes(d.status),
+  );
   clearTimeout(pollTimer);
   if (stillWorking) pollTimer = setTimeout(refreshDocuments, 1200);
 }
 
 async function refreshDocuments() {
   try {
-    const { documents } = await api("/v1/documents");
-    renderDocuments(documents);
+    const documents = [];
+    const limit = 100;
+    let total = 0;
+    do {
+      const page = await api(`/v1/documents?limit=${limit}&offset=${documents.length}`);
+      documents.push(...page.documents);
+      total = page.total;
+      if (!page.documents.length) break;
+    } while (documents.length < total);
+    renderDocuments(documents, total);
   } catch (error) {
     console.error("could not list documents", error);
   }
 }
 
 async function removeDocument(id) {
+  if (!window.confirm("Delete this document and all of its indexed chunks?")) return;
   try {
     await api(`/v1/documents/${id}`, { method: "DELETE" });
   } catch (error) {
@@ -186,6 +212,10 @@ function citation(number, sourceNodes) {
   const chip = el("button", "cite", String(number));
   chip.type = "button";
   chip.title = `Jump to source ${number}`;
+  if (!sourceNodes[number - 1]) {
+    chip.classList.add("invalid");
+    chip.title = `Unavailable source ${number}`;
+  }
   chip.addEventListener("click", () => {
     const target = sourceNodes[number - 1];
     if (!target) return;
@@ -211,6 +241,11 @@ function renderSources(container, sources) {
     where.append(el("span", "source-score", source.score.toFixed(3)));
     card.append(where);
     card.append(el("div", "source-snippet", source.snippet));
+
+    const details = el("details", "source-details");
+    details.append(el("summary", null, "Show complete excerpt"));
+    details.append(el("pre", "source-excerpt", source.excerpt || source.snippet));
+    card.append(details);
 
     container.append(card);
     highlightDocument(source.doc_id);
@@ -248,6 +283,7 @@ async function ask(question) {
 
   let answer = "";
   let sourceNodes = [];
+  let completed = false;
 
   try {
     const response = await fetch("/v1/ask", {
@@ -265,12 +301,16 @@ async function ask(question) {
         renderAnswer(bubble, answer, sourceNodes);
         scrollToBottom();
       } else if (event.name === "done") {
+        completed = true;
         answer = event.data.answer || answer;
         renderAnswer(bubble, answer, sourceNodes);
+        renderCitationStatus(sourcesBox, event.data.citation_status, event.data.citation_warnings);
       } else if (event.name === "error") {
         throw new Error(event.data.message);
       }
     }
+
+    if (!completed) throw new Error("The response stream ended before completion");
 
     history.push({ role: "user", content: question }, { role: "assistant", content: answer });
   } catch (error) {
@@ -284,6 +324,14 @@ async function ask(question) {
   }
 }
 
+function renderCitationStatus(container, status, warnings = []) {
+  if (!status || status === "valid" || status === "not_applicable") return;
+  const message =
+    warnings.join(" ") ||
+    (status === "missing" ? "The answer contains no citations." : "Some citations are invalid.");
+  container.prepend(el("div", `citation-warning ${status}`, message));
+}
+
 /** Parse an SSE byte stream into {name, data} objects. */
 async function* readEvents(body) {
   const reader = body.getReader();
@@ -292,7 +340,10 @@ async function* readEvents(body) {
 
   while (true) {
     const { value, done } = await reader.read();
-    if (done) break;
+    if (done) {
+      buffer += decoder.decode();
+      break;
+    }
     buffer += decoder.decode(value, { stream: true });
 
     let split;
@@ -360,8 +411,8 @@ els.settingsButton.addEventListener("click", () => {
 
 els.saveKey.addEventListener("click", () => {
   const value = els.apiKeyInput.value.trim();
-  if (value) localStorage.setItem("reed.apiKey", value);
-  else localStorage.removeItem("reed.apiKey");
+  if (value) sessionStorage.setItem("reed.apiKey", value);
+  else sessionStorage.removeItem("reed.apiKey");
   refreshStatus();
   refreshDocuments();
 });

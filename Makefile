@@ -18,8 +18,8 @@ format: ## Autoformat and autofix
 	uv run ruff format .
 	uv run ruff check --fix .
 
-type: ## Type-check the package
-	uv run mypy src
+type: ## Type-check the package and tests
+	uv run mypy src tests
 
 test: ## Run the whole test suite
 	uv run pytest

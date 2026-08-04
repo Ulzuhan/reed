@@ -37,13 +37,18 @@ true.
 providers, and Reed must chunk identically whether the embeddings come from OpenAI or a local
 Gemma. The cost is slightly uneven token counts per chunk.
 
-**Idempotency comes from content.** The document id is `d-<sha256[:12]>` and each chunk's point id
+**Idempotency comes from content.** The document id is `d-<sha256[:32]>` and each chunk's point id
 is `uuid5(NAMESPACE, "<sha256>:<chunk_index>")`. Re-ingesting the same file overwrites exactly the
 same points. This matters most after a crash: a half-finished ingestion leaves no orphans, because
 the retry writes to the same ids. A document that is `pending` or `processing` counts as a
 duplicate too, so a double-clicked upload cannot start a second run over a file the first one is
 still reading — and deleting one mid-ingestion is refused with `409` rather than racing the
 background task into leaving vectors behind.
+
+**Publication is two-phase.** Each uploaded vector carries `metadata.committed=false`, so retrieval
+cannot see a partly written remote-Qdrant batch. Once every batch has succeeded, one payload update
+publishes all its point ids. Failures and restart recovery enqueue a document-filtered cleanup, and
+retrieval refuses to run until known partial points have been removed.
 
 **The registry is sqlite.** Chunks live in Qdrant; per-document bookkeeping — status, error message,
 chunk count, content hash — lives in a single sqlite table in WAL mode. No ORM.
@@ -67,12 +72,11 @@ One collection, two named vectors:
 | `sparse` | FastEmbed BM25, with Qdrant computing IDF | Lexical match — finds exact terminology |
 
 The dense size is **probed at startup**, never hardcoded (`text-embedding-3-small` is 1536,
-EmbeddingGemma 768). If the collection already exists with a different size, startup fails with an
-explanation naming the fix — that configuration can never work, so booting anyway would only defer
-the error to the first question. A provider that is merely unreachable is treated differently: the
-server starts, `/health` reports `degraded` with the reason, and it recovers on its own when the
-model comes back. Silently querying a collection built by another model is the kind of bug that
-produces plausible, wrong answers for weeks.
+EmbeddingGemma 768). Collection metadata fingerprints that dimension plus the dense/sparse models,
+task prefixes and chunking setup. Any mismatch fails with an explanation naming the fix. A provider
+that is merely unreachable is treated differently: the server starts, `/health` remains a fast
+liveness probe, `/ready` reports `503`, and it recovers on its own when the model comes back.
+Internal connection details stay in server logs rather than public responses.
 
 Embedded and server Qdrant use the same client and the same query API, including hybrid search.
 Embedded mode holds a file lock, so a running server and an evaluation cannot share a path — which
@@ -97,7 +101,9 @@ cost of a model download and per-query latency.
 
 The system prompt injects retrieved chunks as numbered blocks and states the contract: answer only
 from the excerpts, mark every claim with `[n]`, say plainly when the excerpts do not answer the
-question.
+question. Excerpts and filenames are explicitly labelled as untrusted data, and short follow-up
+questions can incorporate the most recent user question into retrieval without polluting unrelated
+new topics.
 
 Those `[n]` numbers are the same ones sent in the `sources` SSE event, which is what makes a
 citation clickable rather than decorative.
@@ -132,11 +138,11 @@ Ground truth is recorded per document, not per chunk. Chunk boundaries move when
 changes; "the expenses policy answers this" stays true, which keeps the golden set comparable
 across configurations.
 
-Retrieval metrics need no model, so they run in CI and on a laptop with no keys. Judged metrics are
-one structured-output call each, concurrency-limited, and cached on disk keyed by judge model plus
-the exact text judged — so re-running after a retrieval change only pays for answers that actually
-changed. With no judge reachable, the run reports retrieval metrics and exits successfully rather
-than failing.
+Retrieval metrics need no chat or judge model, so they run in CI and on a laptop with no keys.
+Judged metrics are one structured-output call each, concurrency-limited, and cached on disk keyed by
+judge configuration plus the exact text judged. Failed calls are neither averaged nor cached, and
+reports expose metric coverage plus configuration, version and dataset-hash provenance. With no
+judge reachable, the run reports retrieval metrics and exits successfully rather than failing.
 
 ## Testing
 
