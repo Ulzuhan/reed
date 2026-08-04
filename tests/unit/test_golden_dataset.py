@@ -48,9 +48,7 @@ def test_every_expected_document_exists(
     assert not missing, f"golden.jsonl references files not in {CORPUS_DIR}: {sorted(missing)}"
 
 
-def test_every_document_is_exercised(
-    golden: list[GoldenQuestion], corpus_names: set[str]
-) -> None:
+def test_every_document_is_exercised(golden: list[GoldenQuestion], corpus_names: set[str]) -> None:
     referenced = {doc for question in golden for doc in question.expected_docs}
     unused = corpus_names - referenced
     assert not unused, f"no question expects these documents: {sorted(unused)}"
