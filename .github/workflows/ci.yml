@@ -85,7 +85,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       REED_PROFILE: fake
-      REED_DATA_DIR: ${{ runner.temp }}/reed-e2e-data
+      # Job-level expressions cannot use the runner context. Each hosted
+      # runner is ephemeral, so a fixed /tmp path is isolated for this job.
+      REED_DATA_DIR: /tmp/reed-e2e-data
       FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.cache/fastembed
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
