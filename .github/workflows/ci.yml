@@ -37,8 +37,13 @@ jobs:
       - run: uv run mypy src
 
   test:
-    name: Tests
+    name: Tests (py${{ matrix.python }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The README claims 3.11+; this is what makes that claim true.
+        python: ["3.11", "3.12", "3.13"]
     env:
       # No API keys in CI: the fake profile exercises every code path with
       # deterministic stand-in models.
@@ -49,13 +54,15 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+          python-version: ${{ matrix.python }}
       - name: Cache FastEmbed models
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.cache/fastembed
           key: fastembed-${{ runner.os }}-bm25-v1
-      - run: uv sync --group dev
-      - run: uv run pytest
+      # Explicit --python overrides .python-version, which pins 3.13 for local work.
+      - run: uv sync --group dev --python ${{ matrix.python }}
+      - run: uv run --python ${{ matrix.python }} pytest
 
   smoke:
     name: Docker smoke test
