@@ -43,3 +43,18 @@ Backups contain the original documents, registry metadata and embedded vectors. 
 while Reed is stopped, protect them like the source corpus, verify their checksums before restore,
 and remember that remote Qdrant requires a separate coordinated snapshot. See the
 [operations runbook](docs/runbooks.md).
+
+## Repository protections
+
+Release tags cannot be deleted or rewritten, the release environment deploys only from a `v*` tag,
+and packaging runs behind the same quality gate as every pull request. Third-party actions and
+container inputs are pinned by digest, dependencies and built images are scanned, and published
+artifacts carry build provenance attestations you can check with
+`gh attestation verify <file> --repo Ulzuhan/reed`.
+
+Secret scanning and push protection are enabled, which covers GitHub's partner patterns. Detection
+of non-provider patterns and validation of leaked credentials belong to GitHub Secret Protection,
+which this repository does not have. Every pull request scans the whole repository history with
+gitleaks, whose rules are not limited to partner providers, but that gate runs before a merge
+rather than at push time. Keep `REED_API_KEY` and any provider credential out of commits, and
+rotate anything that reaches the history.
