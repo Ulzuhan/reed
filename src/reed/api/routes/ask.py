@@ -15,6 +15,7 @@ from reed.api.sse import PING, SSE_HEADERS, sse_event
 from reed.log import get_logger
 from reed.rag.chain import (
     DoneEvent,
+    ErrorEvent,
     SourcesEvent,
     StreamEvent,
     TokenEvent,
@@ -89,6 +90,14 @@ async def _sse_body(services: Services, request: AskRequest) -> AsyncIterator[st
         try:
             async for event in answer_stream(services, request.question, history, request.top_k):
                 await queue.put(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # answer_stream reports its own failures as events; anything landing
+            # here would otherwise end the stream silently, with no error and no
+            # log, because the task's exception is never retrieved.
+            logger.exception("ask stream producer failed")
+            await queue.put(ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
         finally:
             await queue.put(_STREAM_END)
 
