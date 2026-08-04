@@ -6,11 +6,12 @@ import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from qdrant_client import models
 
 from reed.ingest.pipeline import index_record_into, sha256_file
-from reed.ingest.registry import IndexGeneration
+from reed.ingest.registry import DocumentRecord, IndexGeneration
 from reed.model_identity import resolve_embedding_identity
 from reed.providers import embedding_dimension
 from reed.rag.vectorstore import (
@@ -23,7 +24,14 @@ from reed.rag.vectorstore import (
 )
 from reed.services import Services
 
+if TYPE_CHECKING:
+    from langchain_qdrant import QdrantVectorStore
+    from langchain_qdrant.sparse_embeddings import SparseEmbeddings
+
 _COLLECTION_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
+# One pass indexes the snapshot, later passes catch documents that landed while
+# it ran. Steady ingestion never converges, and that is an operator error.
+_MAX_REINDEX_PASSES = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,29 +79,31 @@ def reindex(services: Services) -> ReindexResult:
             sparse,
             collection_name=physical,
         )
-        records = list(services.registry.list_by_status({"ready"}))
+        # Ingestion writes to the active collection, never to the candidate, so
+        # a document that becomes ready mid-build would be committed in the
+        # registry and absent from the index this activates. Re-check until the
+        # ready set stops growing.
+        indexed_ids: set[str] = set()
         chunks = 0
-        for record in records:
-            if not record.stored_path:
-                raise RuntimeError(
-                    f"{record.filename}: stored original is missing from the registry"
+        pending = list(services.registry.list_by_status({"ready"}))
+        for _ in range(_MAX_REINDEX_PASSES):
+            for record in pending:
+                chunks += _index_original(
+                    services, record, store=store, physical=physical, sparse=sparse
                 )
-            path = Path(record.stored_path)
-            if not path.is_file():
-                raise RuntimeError(f"{record.filename}: stored original no longer exists at {path}")
-            if sha256_file(path) != record.sha256:
-                raise RuntimeError(
-                    f"{record.filename}: stored original no longer matches its SHA-256"
-                )
-            indexed, _ = index_record_into(
-                services,
-                record,
-                store=store,
-                collection_name=physical,
-                embeddings=services.embeddings,
-                sparse_embeddings=sparse,
+                indexed_ids.add(record.id)
+            pending = [
+                record
+                for record in services.registry.list_by_status({"ready"})
+                if record.id not in indexed_ids
+            ]
+            if not pending:
+                break
+        else:
+            raise RuntimeError(
+                f"{len(pending)} document(s) became ready while the candidate was building; "
+                "stop ingestion before reindexing (see the operations runbook)"
             )
-            chunks += indexed
 
         committed = services.qdrant.count(
             collection_name=physical,
@@ -114,7 +124,7 @@ def reindex(services: Services) -> ReindexResult:
             )
         services.registry.set_generation_counts(
             generation.id,
-            document_count=len(records),
+            document_count=len(indexed_ids),
             chunk_count=chunks,
         )
         active = services.registry.activate_generation(generation.id)
@@ -125,6 +135,33 @@ def reindex(services: Services) -> ReindexResult:
         if services.qdrant.collection_exists(physical):
             delete_collection_safely(services.qdrant, physical)
         raise
+
+
+def _index_original(
+    services: Services,
+    record: DocumentRecord,
+    *,
+    store: QdrantVectorStore,
+    physical: str,
+    sparse: SparseEmbeddings,
+) -> int:
+    """Verify one retained original against the registry, then index it."""
+    if not record.stored_path:
+        raise RuntimeError(f"{record.filename}: stored original is missing from the registry")
+    path = Path(record.stored_path)
+    if not path.is_file():
+        raise RuntimeError(f"{record.filename}: stored original no longer exists at {path}")
+    if sha256_file(path) != record.sha256:
+        raise RuntimeError(f"{record.filename}: stored original no longer matches its SHA-256")
+    indexed, _ = index_record_into(
+        services,
+        record,
+        store=store,
+        collection_name=physical,
+        embeddings=services.embeddings,
+        sparse_embeddings=sparse,
+    )
+    return indexed
 
 
 def rollback(services: Services) -> tuple[IndexGeneration, IndexGeneration]:
@@ -162,6 +199,9 @@ def cleanup(services: Services, *, keep: int = 2) -> list[IndexGeneration]:
     for generation in generations:
         if generation.status == "active":
             retained += 1
+            continue
+        if generation.status == "building":
+            # A reindex in another process may be filling this collection.
             continue
         if generation.status == "previous" and retained < keep:
             retained += 1

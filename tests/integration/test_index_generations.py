@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from reed import indexes
 from reed.config import Settings
 from reed.indexes import reindex, rollback
 from reed.ingest.pipeline import ingest_path
@@ -46,6 +48,48 @@ def test_changed_digest_reindexes_without_touching_the_active_collection(
         assert retrieve(restored, "What is the launch code?")[0].filename == "policy.md"
     finally:
         restored.close()
+
+
+def test_reindex_catches_documents_that_arrive_while_it_builds(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    early = tmp_path / "policy.md"
+    early.write_text("# Policy\n\nThe launch code is ORCHID.", encoding="utf-8")
+    late = tmp_path / "annex.md"
+    late.write_text("# Annex\n\nThe backup code is FERN.", encoding="utf-8")
+
+    first = build_services(settings)
+    try:
+        assert ingest_path(first, early).status == "ready"
+    finally:
+        first.close()
+
+    second = build_services(settings)
+    original = indexes._index_original
+    arrived = False
+
+    def index_then_let_one_more_arrive(*args: Any, **kwargs: Any) -> int:
+        # Ingestion writes to the still-active collection, exactly as a live
+        # upload would while an operator reindexes.
+        nonlocal arrived
+        indexed = original(*args, **kwargs)
+        if not arrived:
+            arrived = True
+            assert ingest_path(second, late).status == "ready"
+        return indexed
+
+    monkeypatch.setattr(indexes, "_index_original", index_then_let_one_more_arrive)
+    try:
+        result = reindex(second)
+
+        assert arrived
+        assert result.generation.document_count == 2
+        # Both are ready in the registry, so both must be in the index that
+        # this reindex just activated. Ranking is not the point here.
+        retrieved = {chunk.filename for chunk in retrieve(second, "code")}
+        assert retrieved == {"policy.md", "annex.md"}
+    finally:
+        second.close()
 
 
 def test_failed_reindex_keeps_active_generation_and_deletes_candidate(

@@ -472,10 +472,14 @@ class DocumentRegistry:
         return [_to_generation(row) for row in rows]
 
     def delete_generation(self, generation_id: str) -> bool:
-        """Forget a non-active generation after its physical collection is gone."""
+        """Forget a settled generation after its physical collection is gone.
+
+        A ``building`` row belongs to a reindex that may still be writing into
+        its collection, and the active row is what serves queries.
+        """
         with self._lock:
             cursor = self._conn.execute(
-                "DELETE FROM index_generations WHERE id=? AND status!='active'",
+                "DELETE FROM index_generations WHERE id=? AND status NOT IN ('active', 'building')",
                 (generation_id,),
             )
             self._conn.commit()

@@ -60,6 +60,28 @@ def test_backup_rejects_missing_sources_nested_destinations_and_symlinks(
         create_backup(data, tmp_path / "linked.tar.gz")
 
 
+def test_restore_keeps_recorded_permissions_but_drops_setuid(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    registry = data / "reed.db"
+    registry.write_bytes(b"registry")
+    registry.chmod(0o600)
+    tool = data / "tool"
+    tool.write_text("payload", encoding="utf-8")
+    tool.chmod(0o4755)
+    if not tool.stat().st_mode & 0o4000:
+        pytest.skip("this filesystem does not keep the setuid bit")
+    archive = tmp_path / "backup.tar.gz"
+    create_backup(data, archive)
+
+    restored = tmp_path / "restored"
+    restore_backup(archive, restored)
+
+    # The umask would otherwise widen a private registry to 0644.
+    assert (restored / "reed.db").stat().st_mode & 0o7777 == 0o600
+    assert (restored / "tool").stat().st_mode & 0o7777 == 0o755
+
+
 def test_backup_rejects_path_traversal_members(tmp_path: Path) -> None:
     archive = tmp_path / "unsafe.tar.gz"
     with tarfile.open(archive, "w:gz") as output:

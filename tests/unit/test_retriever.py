@@ -1,6 +1,46 @@
 from __future__ import annotations
 
-from reed.rag.retriever import SNIPPET_CHARS, RetrievedChunk, diversify
+import contextlib
+from types import SimpleNamespace
+from typing import Any
+
+from reed.config import Settings
+from reed.rag.retriever import SNIPPET_CHARS, RetrievedChunk, diversify, retrieve
+
+
+class FakeStore:
+    """Records the candidate count retrieval actually asked Qdrant for."""
+
+    def __init__(self, hits: list[tuple[object, float]]) -> None:
+        self.hits = hits
+        self.requested_k: int | None = None
+
+    def similarity_search_with_score(
+        self, _query: str, k: int, **_kwargs: Any
+    ) -> list[tuple[object, float]]:
+        self.requested_k = k
+        return self.hits
+
+
+def fake_services(store: FakeStore, **settings: Any) -> Any:
+    return SimpleNamespace(
+        settings=Settings(_env_file=None, **settings),
+        retrieval_store=lambda _mode: store,
+        vector_access=contextlib.nullcontext(),
+        flush_pending_vector_cleanup=lambda: None,
+        registry=SimpleNamespace(ready_ids=lambda ids: set(ids)),
+        metrics=SimpleNamespace(
+            increment=lambda *_args, **_kwargs: None,
+            observe=lambda *_args, **_kwargs: None,
+        ),
+    )
+
+
+def document(text: str, doc_id: str) -> object:
+    return SimpleNamespace(
+        page_content=text,
+        metadata={"doc_id": doc_id, "filename": f"{doc_id}.md", "chunk_index": 0},
+    )
 
 
 def chunk(**kwargs: object) -> RetrievedChunk:
@@ -46,6 +86,45 @@ def test_long_snippets_are_truncated_with_an_ellipsis() -> None:
 
 def test_short_snippets_are_left_alone() -> None:
     assert not chunk(text="short enough").snippet.endswith("…")
+
+
+def test_diversity_alone_still_widens_the_candidate_pool() -> None:
+    # Reranking is off, so only diversity justifies fetching beyond top_k. It
+    # has nothing to choose between if retrieval asks for exactly k.
+    store = FakeStore([(document("a", "a"), 0.9)])
+    services = fake_services(
+        store, top_k=4, fetch_k=20, rerank_enabled=False, diversity_enabled=True
+    )
+
+    retrieve(services, "question")
+
+    assert store.requested_k == 20
+
+
+def test_no_candidate_pool_is_fetched_when_nothing_reorders_it() -> None:
+    store = FakeStore([(document("a", "a"), 0.9)])
+    services = fake_services(
+        store, top_k=4, fetch_k=20, rerank_enabled=False, diversity_enabled=False
+    )
+
+    retrieve(services, "question")
+
+    assert store.requested_k == 4
+
+
+def test_the_calibrated_threshold_does_not_leak_into_another_score_domain() -> None:
+    # The 0.833 RRF threshold would abstain on every dense cosine score.
+    store = FakeStore([(document("a", "a"), 0.42)])
+    services = fake_services(
+        store,
+        profile="local",
+        ollama_embed_model="embeddinggemma",
+        retrieval_mode="hybrid",
+        diversity_enabled=False,
+    )
+
+    assert retrieve(services, "question", mode="dense") != []
+    assert retrieve(services, "question", mode="hybrid") == []
 
 
 def test_diversity_limits_one_document_and_prefers_distinct_text() -> None:

@@ -76,9 +76,12 @@ def test_assignment_cannot_bypass_validation() -> None:
         settings.port = 70_000
 
 
-def test_fetch_k_only_applies_when_reranking() -> None:
-    assert make(top_k=4, fetch_k=20, rerank_enabled=False).effective_fetch_k == 4
-    assert make(top_k=4, fetch_k=20, rerank_enabled=True).effective_fetch_k == 20
+def test_evidence_threshold_follows_the_queried_mode_not_the_configured_one() -> None:
+    calibrated = make(profile="local", ollama_embed_model="embeddinggemma", retrieval_mode="hybrid")
+
+    assert calibrated.min_evidence_score_for(mode="hybrid", reranked=False) == pytest.approx(5 / 6)
+    assert calibrated.min_evidence_score_for(mode="dense", reranked=False) == 0
+    assert calibrated.min_evidence_score_for(mode="hybrid", reranked=True) == 0
 
 
 def test_evidence_threshold_is_calibrated_only_for_its_score_domain() -> None:

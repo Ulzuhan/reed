@@ -84,6 +84,22 @@ def test_cleanup_validates_keep_and_skips_an_already_missing_collection() -> Non
     assert services.qdrant.deleted == []
 
 
+def test_cleanup_leaves_a_candidate_that_is_still_building() -> None:
+    # `reed index cleanup` and `reed index reindex` can run at the same time
+    # against a remote Qdrant; deleting the candidate throws away the rebuild.
+    active = generation("active", "active")
+    building = generation("building", "building")
+    registry = FakeRegistry([active, building])
+    qdrant = FakeQdrant({item.physical_collection for item in registry.generations})
+    services = SimpleNamespace(
+        settings=SimpleNamespace(collection="logical"), registry=registry, qdrant=qdrant
+    )
+
+    assert cleanup(services, keep=1) == []  # type: ignore[arg-type]
+    assert registry.deleted == []
+    assert qdrant.deleted == []
+
+
 @pytest.mark.parametrize(
     ("active", "previous", "message"),
     [

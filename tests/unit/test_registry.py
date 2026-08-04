@@ -165,6 +165,19 @@ def test_failed_generation_cannot_replace_the_active_one(registry: DocumentRegis
         registry.activate_generation(candidate.id)
 
 
+def test_a_building_generation_cannot_be_forgotten(registry: DocumentRegistry) -> None:
+    # Its collection may be receiving points from a reindex right now.
+    candidate = registry.create_generation(
+        logical_collection="chunks",
+        physical_collection="chunks__g_candidate",
+        fingerprint={},
+    )
+
+    assert registry.delete_generation(candidate.id) is False
+    assert registry.fail_generation(candidate.id, "aborted") is True
+    assert registry.delete_generation(candidate.id) is True
+
+
 def test_registry_rejects_a_future_schema_before_creating_tables(tmp_path: Path) -> None:
     path = tmp_path / "future.db"
     connection = sqlite3.connect(path)
