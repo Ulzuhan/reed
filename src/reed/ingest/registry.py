@@ -102,6 +102,23 @@ class DocumentRegistry:
     def mark_error(self, doc_id: str, message: str) -> None:
         self._update(doc_id, "UPDATE documents SET status='error', error=? WHERE id=?", (message,))
 
+    def fail_interrupted(self, message: str) -> int:
+        """Mark rows left mid-ingestion by a crash as failed.
+
+        Nothing is in flight when the process starts, so a row still claiming
+        `pending` or `processing` is a leftover. Without this it can never be
+        deleted (the delete guard refuses) nor re-uploaded (the duplicate guard
+        refuses), and the UI spins on it forever.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE documents SET status='error', error=? "
+                "WHERE status IN ('pending', 'processing')",
+                (message,),
+            )
+            self._conn.commit()
+        return int(cursor.rowcount)
+
     def _update(self, doc_id: str, sql: str, params: tuple[object, ...]) -> None:
         with self._lock:
             self._conn.execute(sql, (*params, doc_id))

@@ -38,8 +38,12 @@ def test_a_non_ascii_supplied_key_is_rejected_not_crashed() -> None:
     assert exc.value.status_code == 401
 
 
-def test_a_non_ascii_configured_key_still_works() -> None:
-    require_api_key(make("contraseña"), x_api_key="contraseña")
+def test_a_non_ascii_configured_key_still_works_over_the_wire() -> None:
+    # Starlette decodes header bytes as latin-1, so this is what the endpoint
+    # actually receives when a client sends "contraseña" as utf-8.
+    as_received = "contraseña".encode().decode("latin-1")
+
+    require_api_key(make("contraseña"), x_api_key=as_received)
 
     with pytest.raises(HTTPException):
         require_api_key(make("contraseña"), x_api_key="contrasena")

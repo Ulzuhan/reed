@@ -77,12 +77,46 @@ def test_headings_come_from_the_chunk_not_from_a_lookup() -> None:
         assert f"section {number}" in chunk.text.lower()
 
 
+RUNBOOK = (
+    "# Runbook\n\n## Paging\n\n"
+    + ("Filler prose to push past the chunk boundary. " * 20)
+    + "\n\n## Rolling back\n\n"
+    + ("More filler prose to force another split here. " * 20)
+    + "\n\n```bash\n# Roll back to the previous release\nreed deploy --rollback\n```\n\n"
+    + ("Yet more prose after the code block so it splits. " * 20)
+    + "\n\n## Writing the postmortem\n\nPublish within five working days.\n"
+)
+
+
 def test_a_comment_in_a_code_fence_is_not_a_heading() -> None:
-    document = (
-        "## Deployment\n\nRun the deploy from your laptop.\n\n"
-        "```bash\n# Rotate the production credentials\nreed rotate --force\n```\n\n"
-        "Afterwards, confirm the release in the dashboard.\n"
+    # The splitter puts a fence's opening and closing lines in different
+    # chunks, so neither chunk alone can tell it is inside code — the document
+    # as a whole has to decide what counts as a heading.
+    chunks = split_sections(
+        [RawSection(text=RUNBOOK, page=None)],
+        source_type="md",
+        chunk_size=800,
+        chunk_overlap=100,
     )
+
+    assert "Roll back to the previous release" not in {c.section for c in chunks}
+    comment_chunk = next(c for c in chunks if "reed deploy --rollback" in c.text)
+    assert comment_chunk.section == "Rolling back"
+
+
+def test_a_heading_after_a_code_fence_is_not_lost() -> None:
+    chunks = split_sections(
+        [RawSection(text=RUNBOOK, page=None)],
+        source_type="md",
+        chunk_size=800,
+        chunk_overlap=100,
+    )
+
+    assert "Writing the postmortem" in {c.section for c in chunks}
+
+
+def test_an_unterminated_fence_does_not_swallow_later_headings() -> None:
+    document = "# Notes\n\n```bash\nreed serve\n\n## Verification\n\nCheck the dashboard.\n"
 
     chunks = split_sections(
         [RawSection(text=document, page=None)],
@@ -91,7 +125,9 @@ def test_a_comment_in_a_code_fence_is_not_a_heading() -> None:
         chunk_overlap=0,
     )
 
-    assert {c.section for c in chunks} == {"Deployment"}
+    # Inside an unterminated fence everything is code, so the only heading that
+    # counts is the one that opened the document.
+    assert {c.section for c in chunks} == {"Notes"}
 
 
 def test_plain_text_has_no_section_labels() -> None:

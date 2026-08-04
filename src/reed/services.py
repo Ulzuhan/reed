@@ -34,8 +34,13 @@ class Services:
         self._lock = threading.Lock()
         self._store_lock = threading.Lock()
         # Embedded Qdrant has no internal locking — concurrent writes corrupt
-        # the store. Every vector operation goes through `store_access()`; with
-        # a Qdrant server, its own concurrency control applies instead.
+        # the store. Every vector operation goes through this; with a Qdrant
+        # server, its own concurrency control applies instead.
+        #
+        # Lock order is _store_lock > vector_access > _lock. In practice that
+        # means: resolve `services.vectorstore` BEFORE entering vector_access,
+        # never inside it, or a build in flight on another thread deadlocks
+        # against you.
         self.vector_access = threading.RLock() if not settings.qdrant_url else nullcontext()
         self._chat: BaseChatModel | None = None
         self._embeddings: Embeddings | None = None
@@ -102,14 +107,15 @@ class Services:
 
                 client = self.qdrant
                 embeddings = self.embeddings
+                dimension = embedding_dimension(embeddings)
+                sparse = build_sparse_embeddings(self.settings)
                 with self.vector_access:
-                    ensure_collection(client, self.settings, embedding_dimension(embeddings))
-                self._vectorstore = build_vectorstore(
-                    client,
-                    self.settings,
-                    embeddings,
-                    build_sparse_embeddings(self.settings),
-                )
+                    ensure_collection(client, self.settings, dimension)
+                    # Reads the collection config, which the local backend
+                    # serves from the same structures a write mutates.
+                    self._vectorstore = build_vectorstore(client, self.settings, embeddings, sparse)
+                # Whatever kept the store from opening at startup is over.
+                self.startup_error = None
             return self._vectorstore
 
     @property
@@ -124,7 +130,9 @@ class Services:
             return self._reranker
 
     def close(self) -> None:
-        with self._store_lock, self._lock:
+        # Lock order as documented above, so shutdown cannot close the client
+        # out from under a thread that is mid-upsert.
+        with self._store_lock, self.vector_access, self._lock:
             if self._registry is not None:
                 self._registry.close()
                 self._registry = None

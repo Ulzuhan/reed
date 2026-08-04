@@ -17,11 +17,11 @@ def health(services: ServicesDep) -> HealthResponse:
 
     documents: int | None = None
     try:
-        with services.vector_access:
-            services.qdrant.get_collections()
+        # Deliberately does not touch the vector store: with embedded Qdrant
+        # every operation is serialised, so probing it here would park /health
+        # behind whatever large upload happens to be embedding. Startup records
+        # whether the store opened, and ingestion updates it from then on.
         documents = services.registry.count()
-        # Reported by startup when the collection could not be opened; a store
-        # that answers get_collections can still be unable to serve a query.
         vector_store = services.startup_error or "ok"
     except Exception as exc:  # noqa: BLE001 — health must report, never raise
         vector_store = f"{type(exc).__name__}: {exc}"

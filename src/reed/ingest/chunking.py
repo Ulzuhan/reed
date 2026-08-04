@@ -16,10 +16,7 @@ from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
 from reed.ingest.parsers import RawSection
 
 _HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", re.MULTILINE)
-
-# A shell comment inside a fenced block is not a heading, and mislabelling one
-# as a section poisons every chunk that follows it.
-_FENCED_BLOCK = re.compile(r"^\s*(`{3,}|~{3,}).*?(?:^\s*\1\s*$|\Z)", re.MULTILINE | re.DOTALL)
+_FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,9 +42,35 @@ def _splitter(
     )
 
 
-def _headings(text: str) -> list[str]:
-    outside_code = _FENCED_BLOCK.sub("", text)
-    return [match.group(2).strip() for match in _HEADING.finditer(outside_code)]
+def _real_headings(text: str) -> list[str]:
+    """Every heading in a whole document, ignoring fenced code blocks.
+
+    A shell comment inside a fence is not a heading, and mislabelling one as a
+    section poisons every chunk that follows it. This has to run on the whole
+    document: the splitter routinely puts a fence's opening and closing lines
+    in different chunks, so neither chunk alone can tell it is inside code.
+    """
+    headings: list[str] = []
+    fence: str | None = None
+
+    for line in text.splitlines():
+        marker = _FENCE.match(line)
+        if marker is not None:
+            if fence is None:
+                fence = marker.group(1)[0]  # ` or ~
+            elif marker.group(1).startswith(fence) and not marker.group(2).strip():
+                fence = None
+            continue
+        if fence is None and (heading := _HEADING.match(line)):
+            headings.append(heading.group(2).strip())
+
+    return headings
+
+
+def _headings_in(chunk: str, expected: list[str]) -> list[str]:
+    """Headings found in a chunk, filtered to the ones the document really has."""
+    found = [match.group(2).strip() for match in _HEADING.finditer(chunk)]
+    return [title for title in found if title in expected]
 
 
 def split_sections(
@@ -58,19 +81,21 @@ def split_sections(
 ) -> list[Chunk]:
     """Split into chunks, labelling each with the heading it lives under.
 
-    The heading is read out of the chunk text itself, carried forward to the
-    chunks that follow it. Locating each chunk back in the source would be the
-    obvious alternative, but the splitter rewrites separators, so the lookup
-    fails on exactly the documents that need it and mislabels silently.
+    Headings are read out of the chunk text and carried forward, but only the
+    ones the whole document agrees are headings. Locating each chunk back in
+    the source would be the obvious alternative, and it is what this used to
+    do — but the splitter rewrites separators, so the lookup fails on exactly
+    the documents that need it and mislabels silently.
     """
     splitter = _splitter(source_type, chunk_size, chunk_overlap)
     chunks: list[Chunk] = []
 
     for section in sections:
+        expected = _real_headings(section.text) if source_type == "md" else []
         current: str | None = None
 
         for piece in splitter.split_text(section.text):
-            headings = _headings(piece) if source_type == "md" else []
+            headings = _headings_in(piece, expected) if expected else []
             # A chunk that opens a section belongs to it, not to the previous
             # one; a chunk spanning several hands the last one to its successor.
             label = headings[0] if headings else current

@@ -83,10 +83,16 @@ def _open_vector_store(services: Services) -> None:
 
     A collection built with a different embedding model can never work, so that
     fails the boot outright. A provider that is merely unreachable does not:
-    the server keeps serving and `/health` reports it, because the model may
-    well come back without a restart.
+    the server keeps serving, `/health` reports it, and the flag clears as soon
+    as the store opens — the model may well come back without a restart.
     """
     from reed.rag.vectorstore import CollectionMismatchError
+
+    interrupted = services.registry.fail_interrupted(
+        "interrupted by a restart — re-upload the file"
+    )
+    if interrupted:
+        logger.warning("%d document(s) were left mid-ingestion by a restart", interrupted)
 
     try:
         _ = services.vectorstore

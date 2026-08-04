@@ -31,10 +31,11 @@ def require_api_key(
     """
     if not settings.api_key:
         return
-    # Compare bytes: compare_digest raises TypeError on non-ASCII str, which
-    # would turn a wrong key into a 500 — and a non-ASCII configured key into a
-    # 500 for everyone.
-    supplied = (x_api_key or "").encode("utf-8")
+    # Compare the raw wire bytes. Starlette decodes headers as latin-1, so
+    # round-tripping through it recovers exactly what the client sent — and
+    # comparing bytes avoids compare_digest's TypeError on non-ASCII str, which
+    # would turn a wrong key into a 500.
+    supplied = (x_api_key or "").encode("latin-1", errors="replace")
     expected = settings.api_key.encode("utf-8")
     if not x_api_key or not secrets.compare_digest(supplied, expected):
         raise HTTPException(
