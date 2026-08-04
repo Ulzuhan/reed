@@ -14,7 +14,20 @@ from typing import Literal
 
 QuestionType = Literal["factual", "multi_hop", "negative"]
 
-EVAL_DIR = Path(__file__).resolve().parents[3] / "eval"
+
+def _default_eval_dir() -> Path:
+    """Locate ``eval/`` from a checkout, whether Reed runs from src or installed.
+
+    Prefers the working directory, so `reed eval` works from a clone even when
+    the package itself was pip-installed elsewhere.
+    """
+    from_cwd = Path.cwd() / "eval"
+    if (from_cwd / "golden.jsonl").exists():
+        return from_cwd
+    return Path(__file__).resolve().parents[3] / "eval"
+
+
+EVAL_DIR = _default_eval_dir()
 CORPUS_DIR = EVAL_DIR / "corpus"
 GOLDEN_PATH = EVAL_DIR / "golden.jsonl"
 RESULTS_DIR = EVAL_DIR / "results"
