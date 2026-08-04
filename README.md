@@ -10,6 +10,7 @@ ever leaves it.
 
 [![CI](https://github.com/Ulzuhan/reed/actions/workflows/ci.yml/badge.svg)](https://github.com/Ulzuhan/reed/actions/workflows/ci.yml)
 [![Docker](https://github.com/Ulzuhan/reed/actions/workflows/docker.yml/badge.svg)](https://github.com/Ulzuhan/reed/pkgs/container/reed)
+[![Release](https://img.shields.io/github/v/release/Ulzuhan/reed)](https://github.com/Ulzuhan/reed/releases/latest)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Ruff](https://img.shields.io/badge/lint-ruff-261230?logo=ruff&logoColor=white)](https://docs.astral.sh/ruff/)
 [![mypy strict](https://img.shields.io/badge/mypy-strict-2a6db2)](https://mypy-lang.org/)
@@ -129,7 +130,8 @@ docker compose exec ollama ollama pull embeddinggemma
 REED_PROFILE=local docker compose up -d
 ```
 
-The published image is `ghcr.io/ulzuhan/reed:latest` (linux/amd64 and linux/arm64).
+The published image is `ghcr.io/ulzuhan/reed:latest` (linux/amd64 and linux/arm64). Pin
+`ghcr.io/ulzuhan/reed:0.2.0` when you want a reproducible deployment instead of automatic updates.
 Compose binds it to `127.0.0.1` by default. Before exposing Reed through a LAN, public IP or
 reverse proxy, set a strong ASCII `REED_API_KEY`, configure TLS at the proxy and set
 `REED_CORS_ORIGINS` to the exact browser origins that need access. The built-in request limits are
