@@ -24,6 +24,26 @@ def _build_parser() -> argparse.ArgumentParser:
     ingest = sub.add_parser("ingest", help="Ingest files or folders without starting the server")
     ingest.add_argument("paths", nargs="+", type=Path)
 
+    evaluate = sub.add_parser("eval", help="Run the evaluation suite over the golden question set")
+    evaluate.add_argument(
+        "--retrieval-only",
+        action="store_true",
+        help="Skip the LLM-judged metrics — needs no model at all",
+    )
+    evaluate.add_argument("--k", type=int, default=None, help="Override top_k for this run")
+    evaluate.add_argument(
+        "--judge",
+        choices=["openai", "local"],
+        default=None,
+        help="Which provider scores the answers (default: REED_EVAL_JUDGE_PROFILE)",
+    )
+    evaluate.add_argument("--label", default=None, help="Name this run in the report")
+    evaluate.add_argument(
+        "--summary-row",
+        action="store_true",
+        help="Also print the run as a Markdown table row, for the README",
+    )
+
     return parser
 
 
@@ -76,12 +96,35 @@ def _ingest(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def _eval(args: argparse.Namespace) -> int:
+    from reed.evals.dataset import RESULTS_DIR
+    from reed.evals.runner import run_evaluation
+
+    report = run_evaluation(
+        retrieval_only=args.retrieval_only,
+        top_k=args.k,
+        judge_profile=args.judge,
+        label=args.label,
+    )
+    markdown, _ = report.write(RESULTS_DIR)
+
+    print(report.to_markdown())
+    if args.summary_row:
+        from reed.evals.report import SUMMARY_HEADER
+
+        print(f"\n{SUMMARY_HEADER}\n{report.summary_row()}")
+    print(f"\nWritten to {markdown}", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     setup_logging(get_settings().log_level)
 
     if args.command == "ingest":
         return _ingest(args)
+    if args.command == "eval":
+        return _eval(args)
     return _serve(args)
 
 
