@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     api_key: str = Field(default="", repr=False)
     cors_origins: str = ""
     provider_timeout_seconds: float = Field(default=120.0, ge=1.0, le=600.0)
-    startup_grace_seconds: float = Field(default=0.25, ge=0.0, le=2.0)
+    startup_grace_seconds: float = Field(default=2.0, ge=0.0, le=10.0)
     readiness_retry_initial_seconds: float = Field(default=2.0, ge=0.05, le=60.0)
     readiness_retry_max_seconds: float = Field(default=60.0, ge=0.05, le=600.0)
     max_output_tokens: int = Field(default=1_024, ge=64, le=8_192)
