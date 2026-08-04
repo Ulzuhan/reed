@@ -218,22 +218,20 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         return list(dict.fromkeys(o.strip() for o in self.cors_origins.split(",") if o.strip()))
 
-    @property
-    def effective_fetch_k(self) -> int:
-        """How many candidates retrieval pulls before (optional) reranking."""
-        rerank = self.rerank_enabled or self.retrieval_mode == "hybrid_rerank"
-        return max(self.fetch_k, self.top_k) if rerank else self.top_k
+    def min_evidence_score_for(self, *, mode: str, reranked: bool) -> float:
+        """Return a threshold valid for the score domain actually queried.
 
-    @property
-    def resolved_min_evidence_score(self) -> float:
-        """Return a threshold valid for the configured retrieval score domain."""
+        The mode is a parameter because a caller may query a mode other than
+        the configured one; the calibration belongs to the scores in front of
+        it, not to the settings object.
+        """
         if self.min_evidence_score is not None:
             return self.min_evidence_score
         if (
             self.profile == "local"
             and "embeddinggemma" in self.ollama_embed_model.lower()
-            and self.retrieval_mode == "hybrid"
-            and not self.rerank_enabled
+            and mode == "hybrid"
+            and not reranked
         ):
             # RRF score calibrated on the v0.3 golden set. Dense similarity,
             # sparse and cross-encoder scores are not numerically comparable.
@@ -241,6 +239,11 @@ class Settings(BaseSettings):
             # higher and would incorrectly reject candidates on the boundary.
             return EMBEDDINGGEMMA_HYBRID_MIN_SCORE
         return 0.0
+
+    @property
+    def resolved_min_evidence_score(self) -> float:
+        """The threshold for the configured retrieval mode."""
+        return self.min_evidence_score_for(mode=self.retrieval_mode, reranked=self.rerank_enabled)
 
     def validate_ready(self) -> None:
         """Fail fast at startup on configurations that cannot possibly work."""

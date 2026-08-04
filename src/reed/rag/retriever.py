@@ -106,7 +106,9 @@ def retrieve(
     else:
         chunks = _limit_per_document(chunks, settings.max_chunks_per_document)
 
-    threshold = settings.resolved_min_evidence_score
+    # From the queried mode, not from the settings: `mode` may override it, and
+    # RRF, dense, sparse and cross-encoder scores share no numeric scale.
+    threshold = settings.min_evidence_score_for(mode=selected_mode, reranked=use_reranker)
     if apply_threshold and threshold and (not chunks or chunks[0].score < threshold):
         logger.info(
             "retrieval abstained: top score %.4f is below %.4f",

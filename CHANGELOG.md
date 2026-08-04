@@ -8,6 +8,17 @@ fixes.
 
 ### Fixed
 
+- Index documents that become ready while a reindex is building. Ingestion writes to the active
+  collection, so a document uploaded mid-build was committed in the registry and absent from the
+  index that reindex then activated: unreachable by search and refused as a duplicate on re-upload.
+  The candidate now re-checks the ready set until it stops growing, and refuses to activate rather
+  than activate a known gap.
+- Leave a `building` generation alone during `reed index cleanup`, and refuse to delete its registry
+  row, so cleanup cannot destroy a candidate another process is still filling.
+- Resolve the evidence threshold from the retrieval mode actually queried rather than the configured
+  one. RRF, dense, sparse and cross-encoder scores share no numeric scale.
+- Restore backup files with their recorded permissions instead of inheriting the umask, which
+  widened a `0600` registry to `0644`. setuid, setgid and sticky bits are dropped.
 - Publish the `latest` container tag from release tags only. It was gated on `is_default_branch`,
   which is also true for a tag push, so `main` and `v*` alternately claimed it; since Compose
   defaults to `latest`, an unpinned deployment could run an unreleased `main` build.
@@ -15,6 +26,11 @@ fixes.
   run on a tag push and both call it, so a group built only from the ref made one cancel the
   other's quality gate, and with it the whole run, leaving the versioned container manifest
   unpublished for v0.3.0.
+
+### Removed
+
+- `Settings.effective_fetch_k`, which nothing used and which contradicted retrieval by ignoring the
+  diversity selection that also widens the candidate pool.
 
 ## [0.3.0] - 2026-08-04
 

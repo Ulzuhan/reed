@@ -113,11 +113,16 @@ def restore_backup(archive_path: Path, data_dir: Path) -> BackupManifest:
             for relative in manifest.files:
                 destination = scratch / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                source = archive.extractfile(f"data/{relative}")
+                member = archive.getmember(f"data/{relative}")
+                source = archive.extractfile(member)
                 if source is None:
                     raise ValueError(f"Backup file cannot be read: {relative}")
                 with destination.open("wb") as output:
                     shutil.copyfileobj(source, output)
+                # Restore the recorded permissions instead of inheriting the
+                # umask, which would widen a 0600 registry to 0644. setuid,
+                # setgid and sticky bits are dropped: an archive is data.
+                destination.chmod(member.mode & 0o777)
         if target.exists():
             target.rmdir()
         scratch.replace(target)
