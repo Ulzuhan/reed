@@ -210,9 +210,45 @@ downgrade, and a judge that can be a local model.
 
 ### Results
 
-<!-- EVAL-TABLE -->
-_Populated by `uv run reed eval --summary-row`._
-<!-- /EVAL-TABLE -->
+Thirty questions over the eight-document corpus, running **entirely on a
+laptop** — EmbeddingGemma for embeddings, Qwen3.5 4B for both answering and
+judging. Full reports: [without reranking](eval/results/local-hybrid.md),
+[with reranking](eval/results/local-hybrid-rerank.md).
+
+| Configuration | hit@1 | hit@k | MRR | Faithfulness | Correctness | Ctx precision | Ctx recall |
+|---|---|---|---|---|---|---|---|
+| hybrid, k=4 | 62% | 92% | 0.756 | 71% | 71% | 40% | 60% |
+| hybrid + rerank, k=4 | **81%** | **96%** | **0.872** | 76% | 70% | 32% | 59% |
+
+**Reranking clearly helps retrieval** — the right document goes from first place
+62% of the time to 81%, and multi-hop questions get all their evidence 88% of
+the time instead of 81%.
+
+**It does not obviously help the answers.** Correctness is flat, and judged
+context precision actually drops. That is the useful result: a better ranking
+put the right passage in front of the model, and a 4B model still did not
+always use it. Retrieval was not the bottleneck the numbers first suggested.
+
+Three things worth being explicit about before anyone quotes these:
+
+- **The judge is the same model being judged.** With no OpenAI key on the
+  machine that produced this, Qwen3.5 4B scored its own answers, and models are
+  known to favour their own output. Re-run with `--judge openai` for a number
+  that does not have that problem.
+- **Thirty questions is a small sample.** The refusal metric covers four
+  questions, so the 100% → 75% difference between the two rows is a single
+  question changing its mind.
+- **Context precision is low by construction.** With `k=4` on a corpus where one
+  chunk usually holds the whole answer, three of the four retrieved chunks are
+  expected to be judged irrelevant.
+
+One thing the suite settled that documentation could not: EmbeddingGemma's model
+card prescribes task prefixes for queries and documents, and it is not stated
+whether Ollama applies them itself. Measured both ways, the difference is inside
+the noise (hit@1 identical, MRR 0.756 vs 0.763, full coverage 81% vs 77%).
+Prefixes stay on by default — they match the model card — but the point is that
+this was checked rather than assumed, in about ten minutes, because the
+retrieval metrics need no model at all.
 
 ## Configuration
 

@@ -17,8 +17,10 @@ htmlcov/
 data/
 .env
 
-# Evaluation artifacts — report.md is committed, raw runs are not
-eval/results/*.json
+# Evaluation artifacts. Named snapshots under eval/results/ are committed;
+# the report each run overwrites, and the judge cache, are not.
+eval/results/report.md
+eval/results/report.json
 eval/results/cache/
 
 # Local model caches
