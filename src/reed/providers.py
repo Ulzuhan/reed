@@ -66,6 +66,9 @@ def build_chat_model(settings: Settings, profile: Profile | None = None) -> Base
             model=settings.ollama_chat_model,
             base_url=settings.ollama_base_url,
             temperature=settings.temperature,
+            num_predict=settings.max_output_tokens,
+            client_kwargs={"timeout": settings.provider_timeout_seconds},
+            async_client_kwargs={"timeout": settings.provider_timeout_seconds},
             # Qwen3.5 emits <think> blocks otherwise, which would leak into the
             # token stream and the citations.
             reasoning=False,
@@ -77,11 +80,15 @@ def build_chat_model(settings: Settings, profile: Profile | None = None) -> Base
         return ChatOpenAI(
             model=settings.openai_chat_model,
             openai_api_key=settings.openai_api_key,
+            timeout=settings.provider_timeout_seconds,
+            max_completion_tokens=settings.max_output_tokens,
         )
     return ChatOpenAI(
         model=settings.openai_chat_model,
         openai_api_key=settings.openai_api_key,
         temperature=settings.temperature,
+        timeout=settings.provider_timeout_seconds,
+        max_completion_tokens=settings.max_output_tokens,
     )
 
 
@@ -99,6 +106,8 @@ def build_embeddings(settings: Settings, profile: Profile | None = None) -> Embe
         inner = OllamaEmbeddings(
             model=settings.ollama_embed_model,
             base_url=settings.ollama_base_url,
+            client_kwargs={"timeout": settings.provider_timeout_seconds},
+            async_client_kwargs={"timeout": settings.provider_timeout_seconds},
         )
     else:
         from langchain_openai import OpenAIEmbeddings
@@ -106,6 +115,7 @@ def build_embeddings(settings: Settings, profile: Profile | None = None) -> Embe
         inner = OpenAIEmbeddings(
             model=settings.openai_embed_model,
             openai_api_key=settings.openai_api_key,
+            timeout=settings.provider_timeout_seconds,  # type: ignore[call-arg]
         )
 
     query_prefix = settings.resolved_query_prefix

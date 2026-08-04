@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
+
+from reed.api.app import create_app
+from reed.config import Settings
 
 pytestmark = pytest.mark.integration
 
@@ -21,11 +25,11 @@ def upload(client: TestClient, tmp_path: Path, name: str = "expenses.md") -> str
     path.write_text(HANDBOOK, encoding="utf-8")
     with path.open("rb") as handle:
         response = client.post("/v1/documents", files={"file": (name, handle, "text/markdown")})
-    return response.json()["document_id"]
+    return cast(str, response.json()["document_id"])
 
 
-def read_events(raw: str) -> list[tuple[str, dict[str, object]]]:
-    events = []
+def read_events(raw: str) -> list[tuple[str, dict[str, Any]]]:
+    events: list[tuple[str, dict[str, Any]]] = []
     for frame in raw.split("\n\n"):
         name = ""
         data = ""
@@ -69,6 +73,7 @@ def test_stream_carries_citable_sources(client: TestClient, tmp_path: Path) -> N
     assert first["doc_id"] == document_id
     assert first["filename"] == "expenses.md"
     assert first["snippet"]
+    assert "75 euros" in first["excerpt"]
 
 
 def test_done_event_matches_the_streamed_tokens(client: TestClient, tmp_path: Path) -> None:
@@ -82,6 +87,7 @@ def test_done_event_matches_the_streamed_tokens(client: TestClient, tmp_path: Pa
     assert done["answer"] == streamed
     assert "[1]" in streamed  # the fake model honours the citation contract
     assert done["latency_ms"] >= 0
+    assert done["citation_status"] == "valid"
 
 
 def test_non_streaming_mode_returns_one_json_body(client: TestClient, tmp_path: Path) -> None:
@@ -94,6 +100,7 @@ def test_non_streaming_mode_returns_one_json_body(client: TestClient, tmp_path: 
     assert "[1]" in body["answer"]
     assert body["sources"][0]["filename"] == "expenses.md"
     assert body["latency_ms"] >= 0
+    assert body["citation_status"] == "valid"
 
 
 def test_asking_with_no_documents_says_so_instead_of_guessing(client: TestClient) -> None:
@@ -138,3 +145,23 @@ def test_history_is_accepted(client: TestClient, tmp_path: Path) -> None:
 
 def test_an_empty_question_is_rejected(client: TestClient) -> None:
     assert client.post("/v1/ask", json={"question": ""}).status_code == 422
+    assert client.post("/v1/ask", json={"question": "   "}).status_code == 422
+
+
+def test_history_has_hard_size_limits(client: TestClient) -> None:
+    too_many = [{"role": "user", "content": "x"}] * 7
+    assert client.post("/v1/ask", json={"question": "q", "history": too_many}).status_code == 422
+
+    too_long = [{"role": "user", "content": "x" * 8_001}]
+    assert client.post("/v1/ask", json={"question": "q", "history": too_long}).status_code == 422
+
+
+def test_expensive_asks_are_rate_limited(settings: Settings) -> None:
+    limited = settings.model_copy(update={"ask_rate_limit_per_minute": 1})
+    with TestClient(create_app(limited)) as limited_client:
+        first = limited_client.post("/v1/ask", json={"question": "one", "stream": False})
+        second = limited_client.post("/v1/ask", json={"question": "two", "stream": False})
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.headers["retry-after"] == "60"

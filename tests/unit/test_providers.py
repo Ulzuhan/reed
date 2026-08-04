@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from langchain_core.embeddings import Embeddings
 
 from reed.config import Settings
@@ -27,8 +29,8 @@ class RecordingEmbeddings(Embeddings):
         return [0.0]
 
 
-def make(**kwargs: object) -> Settings:
-    return Settings(_env_file=None, **kwargs)  # type: ignore[call-arg,arg-type]
+def make(**kwargs: Any) -> Settings:
+    return Settings(_env_file=None, **kwargs)
 
 
 def test_prefixes_are_applied_asymmetrically() -> None:

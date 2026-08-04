@@ -104,6 +104,41 @@ def test_a_comment_in_a_code_fence_is_not_a_heading() -> None:
     assert comment_chunk.section == "Rolling back"
 
 
+def test_a_fenced_heading_with_a_real_heading_title_is_still_code() -> None:
+    document = (
+        "# Guide\n\n## Deployment\n\nReal deployment instructions.\n\n"
+        "```markdown\n## Recovery\nThis is only an example.\n```\n\n"
+        "More deployment prose.\n\n## Recovery\n\nReal recovery instructions.\n"
+    )
+
+    chunks = split_sections(
+        [RawSection(text=document, page=None)],
+        source_type="md",
+        chunk_size=120,
+        chunk_overlap=0,
+    )
+
+    example = next(chunk for chunk in chunks if "only an example" in chunk.text)
+    real = next(chunk for chunk in chunks if "Real recovery" in chunk.text)
+    assert example.section == "Deployment"
+    assert real.section == "Recovery"
+
+
+def test_uploaded_text_cannot_impersonate_internal_heading_markers() -> None:
+    marker = "\ue000reed-heading-999\ue001"
+    document = f"# Guide\n\nLiteral marker: {marker}\n\n## Safe\n\nStill labelled correctly."
+
+    chunks = split_sections(
+        [RawSection(text=document, page=None)],
+        source_type="md",
+        chunk_size=2_000,
+        chunk_overlap=0,
+    )
+
+    assert marker in chunks[0].text
+    assert chunks[0].section == "Guide"
+
+
 def test_a_heading_after_a_code_fence_is_not_lost() -> None:
     chunks = split_sections(
         [RawSection(text=RUNBOOK, page=None)],

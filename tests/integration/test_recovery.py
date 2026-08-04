@@ -63,7 +63,7 @@ def test_health_notices_a_remote_qdrant_that_dies_after_startup(
     # A restarted or partitioned Qdrant container is invisible to a health
     # check that only remembers what startup found.
     with TestClient(create_app(settings)) as client:
-        assert client.get("/health").json()["status"] == "ok"
+        assert client.get("/ready").json()["status"] == "ok"
 
         services = client.app.state.services  # type: ignore[attr-defined]
         monkeypatch.setattr(services.settings, "qdrant_url", "http://qdrant:6333")
@@ -73,10 +73,28 @@ def test_health_notices_a_remote_qdrant_that_dies_after_startup(
             lambda _: (_ for _ in ()).throw(ConnectionError("connection refused")),
         )
 
-        body = client.get("/health").json()
+        body = client.get("/ready").json()
 
     assert body["status"] == "degraded"
-    assert "connection refused" in body["vector_store"]
+    assert body["vector_store"] == "unavailable"
+
+
+def test_readiness_returns_503_when_a_remote_store_dies(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with TestClient(create_app(settings)) as client:
+        services = client.app.state.services  # type: ignore[attr-defined]
+        monkeypatch.setattr(services.settings, "qdrant_url", "http://qdrant:6333")
+        monkeypatch.setattr(
+            type(services.qdrant),
+            "get_collections",
+            lambda _: (_ for _ in ()).throw(ConnectionError("secret endpoint")),
+        )
+
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert "secret endpoint" not in response.text
 
 
 def test_health_does_not_probe_an_embedded_store(
@@ -106,19 +124,19 @@ def test_health_recovers_once_the_provider_comes_back(
 
     def flaky(*_: object, **__: object) -> DeterministicFakeEmbedding:
         calls["n"] += 1
-        if calls["n"] == 1:
+        if calls["n"] <= 2:
             raise ConnectionError("Ollama unreachable at http://localhost:11434")
         return DeterministicFakeEmbedding(size=FAKE_EMBEDDING_DIM)
 
     monkeypatch.setattr("reed.providers.build_embeddings", flaky)
 
     with TestClient(create_app(settings)) as client:
-        assert client.get("/health").json()["status"] == "degraded"
+        assert client.get("/ready").json()["status"] == "degraded"
 
         # The provider is back; a successful ingestion must clear the flag
         # rather than leaving a healthy instance reporting degraded forever.
         client.post("/v1/documents", files={"file": ("a.md", b"# A\n\nText.", "text/markdown")})
 
-        body = client.get("/health").json()
+        body = client.get("/ready").json()
         assert body["status"] == "ok"
         assert body["vector_store"] == "ok"

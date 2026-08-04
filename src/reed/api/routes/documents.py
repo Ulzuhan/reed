@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import contextlib
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 
-from reed.api.deps import ServicesDep, require_api_key
+from reed.api.deps import ServicesDep, enforce_rate_limit, require_api_key
 from reed.api.schemas import DocumentInfo, DocumentList, UploadAccepted
 from reed.ingest.parsers import UnsupportedFileError, source_type
 from reed.ingest.pipeline import (
@@ -45,9 +56,16 @@ def _to_info(record: DocumentRecord) -> DocumentInfo:
 async def upload_document(
     services: ServicesDep,
     background: BackgroundTasks,
+    http_request: Request,
     file: UploadFile,
 ) -> UploadAccepted:
-    filename = Path(file.filename or "upload").name
+    enforce_rate_limit(
+        http_request,
+        services,
+        scope="upload",
+        limit=services.settings.upload_rate_limit_per_minute,
+    )
+    filename = _safe_filename(file.filename or "upload")
     try:
         source_type(Path(filename))
     except UnsupportedFileError as exc:
@@ -58,24 +76,40 @@ async def upload_document(
 
     limit_mb = services.settings.max_upload_mb
     max_bytes = limit_mb * 1024 * 1024
-    with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False) as staged:
-        written = 0
-        while block := await file.read(READ_CHUNK):
-            written += len(block)
-            if written > max_bytes:
-                staged.close()
-                Path(staged.name).unlink(missing_ok=True)
-                raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail=f"File exceeds REED_MAX_UPLOAD_MB ({limit_mb} MB)",
-                )
-            staged.write(block)
-        staged_path = Path(staged.name)
-
+    staged_path: Path | None = None
     try:
+        with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False) as staged:
+            staged_path = Path(staged.name)
+            written = 0
+            while block := await file.read(READ_CHUNK):
+                written += len(block)
+                if written > max_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"File exceeds REED_MAX_UPLOAD_MB ({limit_mb} MB)",
+                    )
+                staged.write(block)
+
+        if written == 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Uploaded file is empty",
+            )
+        assert staged_path is not None
         record, duplicate = register_upload(services, source=staged_path, filename=filename)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("upload could not be staged or registered")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="The upload could not be registered",
+        ) from exc
     finally:
-        staged_path.unlink(missing_ok=True)
+        if staged_path is not None:
+            staged_path.unlink(missing_ok=True)
+        with contextlib.suppress(Exception):
+            await file.close()
 
     if duplicate:
         raise HTTPException(
@@ -91,8 +125,18 @@ async def upload_document(
 
 
 @router.get("", response_model=DocumentList)
-def list_documents(services: ServicesDep) -> DocumentList:
-    return DocumentList(documents=[_to_info(r) for r in services.registry.list()])
+def list_documents(
+    services: ServicesDep,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> DocumentList:
+    records = services.registry.list(limit=limit, offset=offset)
+    return DocumentList(
+        documents=[_to_info(record) for record in records],
+        total=services.registry.count(),
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/{document_id}", response_model=DocumentInfo)
@@ -109,7 +153,25 @@ def remove_document(services: ServicesDep, document_id: str) -> Response:
         removed = delete_document(services, document_id)
     except DocumentBusyError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("document deletion failed for %s", document_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Document deletion could not be completed; retry the operation",
+        ) from exc
 
     if not removed:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown document")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _safe_filename(filename: str) -> str:
+    basename = Path(filename).name
+    printable = "".join(character for character in basename if character.isprintable())
+    if not printable:
+        return "upload"
+    if len(printable) <= 255:
+        return printable
+    suffix = Path(printable).suffix[:20]
+    stem_limit = 255 - len(suffix)
+    return f"{Path(printable).stem[:stem_limit]}{suffix}"

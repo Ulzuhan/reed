@@ -11,10 +11,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Profile = Literal["openai", "local", "fake"]
+LogLevel = Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"]
 
 # EmbeddingGemma is trained with task prefixes and loses accuracy without them.
 # https://ai.google.dev/gemma/docs/embeddinggemma/model_card
@@ -28,15 +29,18 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        validate_assignment=True,
     )
 
     profile: Profile = "openai"
 
     # --- OpenAI ---------------------------------------------------------
-    # Read from the conventional OPENAI_API_KEY, not REED_OPENAI_API_KEY.
+    # The conventional OPENAI_API_KEY works, and so does the prefixed spelling —
+    # an explicit alias list suppresses env_prefix, so both must be named here.
     openai_api_key: str = Field(
         default="",
-        validation_alias=AliasChoices("OPENAI_API_KEY", "openai_api_key"),
+        validation_alias=AliasChoices("OPENAI_API_KEY", "REED_OPENAI_API_KEY", "openai_api_key"),
+        repr=False,
     )
     openai_chat_model: str = "gpt-5-mini"
     openai_embed_model: str = "text-embedding-3-small"
@@ -54,7 +58,7 @@ class Settings(BaseSettings):
     # --- Vector store ---------------------------------------------------
     # Empty url => embedded Qdrant under ``data_dir/qdrant``, no server needed.
     qdrant_url: str = ""
-    qdrant_api_key: str = ""
+    qdrant_api_key: str = Field(default="", repr=False)
     collection: str = "reed_chunks"
 
     # --- Retrieval ------------------------------------------------------
@@ -63,34 +67,66 @@ class Settings(BaseSettings):
     rerank_enabled: bool = False
     rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
     sparse_model: str = "Qdrant/bm25"
+    max_context_chars: int = Field(default=24_000, ge=1_000, le=200_000)
 
     # --- Ingestion ------------------------------------------------------
     chunk_size: int = Field(default=1000, ge=100, le=8000)
     chunk_overlap: int = Field(default=150, ge=0, le=2000)
     max_upload_mb: int = Field(default=25, ge=1, le=500)
+    max_document_chars: int = Field(default=5_000_000, ge=1_000, le=50_000_000)
+    max_pdf_pages: int = Field(default=1_000, ge=1, le=10_000)
 
     # --- Server ---------------------------------------------------------
     data_dir: Path = Path("./data")
     host: str = "127.0.0.1"
-    port: int = 8000
-    log_level: str = "INFO"
+    port: int = Field(default=8000, ge=1, le=65535)
+    log_level: LogLevel = "INFO"
     temperature: float = Field(default=0.1, ge=0.0, le=2.0)
-    api_key: str = ""
+    api_key: str = Field(default="", repr=False)
     cors_origins: str = ""
+    provider_timeout_seconds: float = Field(default=120.0, ge=1.0, le=600.0)
+    max_output_tokens: int = Field(default=1_024, ge=64, le=8_192)
+    max_concurrent_asks: int = Field(default=8, ge=1, le=100)
+    max_concurrent_ingestions: int = Field(default=2, ge=1, le=32)
+    ask_rate_limit_per_minute: int = Field(default=60, ge=0, le=10_000)
+    upload_rate_limit_per_minute: int = Field(default=20, ge=0, le=10_000)
+    sse_queue_size: int = Field(default=64, ge=4, le=4_096)
 
     # --- Evaluation -----------------------------------------------------
     eval_judge_profile: Profile = "openai"
     eval_judge_model: str = ""
 
-    @field_validator("chunk_overlap")
+    @field_validator("log_level", mode="before")
     @classmethod
-    def _overlap_below_size(cls, value: int, info: object) -> int:
-        # ``info.data`` holds the fields validated so far (chunk_size precedes us).
-        data = getattr(info, "data", {})
-        size = data.get("chunk_size")
-        if size is not None and value >= size:
-            raise ValueError(f"chunk_overlap ({value}) must be smaller than chunk_size ({size})")
+    def _normalise_log_level(cls, value: object) -> object:
+        return value.upper() if isinstance(value, str) else value
+
+    @field_validator("api_key")
+    @classmethod
+    def _api_key_is_canonical_ascii(cls, value: str) -> str:
+        """Keep one unambiguous wire representation for the shared secret.
+
+        HTTP clients disagree on how to encode non-ASCII header strings. Accepting
+        both UTF-8 and latin-1 makes distinct human strings aliases for the same
+        bytes, so configured keys are deliberately restricted to portable ASCII.
+        """
+        if value and not value.isascii():
+            raise ValueError("REED_API_KEY must contain ASCII characters only")
         return value
+
+    @model_validator(mode="after")
+    def _validate_related_fields(self) -> Settings:
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError(
+                f"chunk_overlap ({self.chunk_overlap}) must be smaller than "
+                f"chunk_size ({self.chunk_size})"
+            )
+        if self.max_context_chars < self.chunk_size:
+            raise ValueError(
+                f"max_context_chars ({self.max_context_chars}) must be at least "
+                f"chunk_size ({self.chunk_size})"
+            )
+        return self
 
     @property
     def chat_model_name(self) -> str:
@@ -140,7 +176,7 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        return list(dict.fromkeys(o.strip() for o in self.cors_origins.split(",") if o.strip()))
 
     @property
     def effective_fetch_k(self) -> int:

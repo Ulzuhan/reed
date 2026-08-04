@@ -58,20 +58,76 @@ def test_ingesting_a_markdown_file_stores_retrievable_chunks(
     assert record is not None
     assert record.status == "ready"
     assert record.filename == "expenses.md"
+    points, _ = services.qdrant.scroll(
+        services.settings.collection,
+        limit=100,
+        with_payload=True,
+    )
+    assert all(point.payload["metadata"]["committed"] is True for point in points if point.payload)
+
+
+def test_a_failed_partial_upsert_leaves_no_queryable_points(
+    services: Services, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from reed.ingest.pipeline import process_document, register_upload
+
+    path = write_handbook(tmp_path, body=HANDBOOK * 20)
+    record, _ = register_upload(services, source=path, filename=path.name)
+    store_type = type(services.vectorstore)
+    original = store_type.add_texts
+
+    def fail_after_one(self: object, **kwargs: object) -> list[str]:
+        texts = kwargs["texts"]
+        metadatas = kwargs["metadatas"]
+        ids = kwargs["ids"]
+        assert isinstance(texts, list)
+        assert isinstance(metadatas, list)
+        assert isinstance(ids, list)
+        original(
+            self,  # type: ignore[arg-type]
+            texts=texts[:1],
+            metadatas=metadatas[:1],
+            ids=ids[:1],
+        )
+        raise RuntimeError("secret provider failure")
+
+    monkeypatch.setattr(store_type, "add_texts", fail_after_one)
+    result = process_document(services, record.id)
+
+    assert result.status == "error"
+    assert result.error == "Ingestion failed; inspect the server logs for details"
+    assert count_points(services) == 0
+
+
+def test_retrieval_requires_vector_and_registry_commits(services: Services, tmp_path: Path) -> None:
+    from reed.ingest.pipeline import ingest_path
+    from reed.rag.retriever import retrieve
+
+    result = ingest_path(services, write_handbook(tmp_path))
+    assert retrieve(services, "expense threshold")
+
+    # Simulate the cross-store publication window or an orphan left by a
+    # failed registry commit: committed vectors alone must never be visible.
+    services.registry.mark_error(result.document_id, "registry commit failed")
+
+    assert retrieve(services, "expense threshold") == []
 
 
 def test_reingesting_identical_content_does_not_duplicate_points(
     services: Services, tmp_path: Path
 ) -> None:
-    from reed.ingest.pipeline import ingest_path, process_document
+    from reed.ingest.pipeline import ingest_path, process_document, register_upload
 
     path = write_handbook(tmp_path)
     first = ingest_path(services, path)
     before = count_points(services)
 
-    # Force the work to run again rather than short-circuiting on the registry:
-    # deterministic point ids must overwrite, not append.
-    process_document(services, first.document_id)
+    # A failed row is the supported retry path. Deterministic point ids must
+    # overwrite rather than append when that retry runs.
+    services.registry.mark_error(first.document_id, "retry me")
+    record, duplicate = register_upload(services, source=path, filename=path.name)
+    assert duplicate is False
+    process_document(services, record.id)
 
     assert count_points(services) == before
 
@@ -151,6 +207,20 @@ def test_upload_endpoint_reports_progress_until_ready(client: TestClient, tmp_pa
     assert [d["id"] for d in listing["documents"]] == [document_id]
 
 
+def test_document_listing_is_paginated(client: TestClient, tmp_path: Path) -> None:
+    for index in range(3):
+        path = write_handbook(tmp_path, f"{index}.md", f"# Document {index}\n\nUnique {index}.")
+        with path.open("rb") as handle:
+            client.post("/v1/documents", files={"file": (path.name, handle, "text/markdown")})
+
+    first = client.get("/v1/documents?limit=2&offset=0").json()
+    second = client.get("/v1/documents?limit=2&offset=2").json()
+
+    assert first["total"] == 3
+    assert len(first["documents"]) == 2
+    assert len(second["documents"]) == 1
+
+
 def test_uploading_the_same_file_twice_conflicts(client: TestClient, tmp_path: Path) -> None:
     path = write_handbook(tmp_path)
 
@@ -171,6 +241,16 @@ def test_unsupported_types_are_rejected_before_any_work(client: TestClient) -> N
     )
 
     assert response.status_code == 415
+
+
+def test_a_zero_byte_upload_is_rejected_synchronously(client: TestClient) -> None:
+    response = client.post(
+        "/v1/documents",
+        files={"file": ("empty.md", b"", "text/markdown")},
+    )
+
+    assert response.status_code == 422
+    assert client.get("/v1/documents").json()["total"] == 0
 
 
 def test_deleting_through_the_api(client: TestClient, tmp_path: Path) -> None:
@@ -202,7 +282,7 @@ def test_a_document_being_ingested_cannot_be_deleted(services: Services, tmp_pat
     record, _ = register_upload(services, source=write_handbook(tmp_path), filename="expenses.md")
     services.registry.mark_processing(record.id)
 
-    with pytest.raises(DocumentBusyError, match="still being ingested"):
+    with pytest.raises(DocumentBusyError, match="busy"):
         delete_document(services, record.id)
 
 
@@ -228,7 +308,7 @@ def test_health_counts_documents(client: TestClient, tmp_path: Path) -> None:
     with path.open("rb") as handle:
         client.post("/v1/documents", files={"file": ("expenses.md", handle, "text/markdown")})
 
-    body = client.get("/health").json()
+    body = client.get("/ready").json()
     assert body["status"] == "ok"
     assert body["vector_store"] == "ok"
     assert body["documents"] == 1

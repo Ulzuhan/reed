@@ -6,6 +6,7 @@ import json
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from statistics import median
 
 from reed.evals.judge import JudgeScores
 from reed.evals.retrieval import RetrievalMetrics, RetrievalOutcome
@@ -39,6 +40,7 @@ class Report:
     retrieval: RetrievalMetrics
     results: list[QuestionResult]
     skipped_reason: str | None = None
+    provenance: dict[str, object] = field(default_factory=dict)
 
     @property
     def generation(self) -> dict[str, float | None]:
@@ -56,9 +58,32 @@ class Report:
         }
 
     @property
-    def median_latency_ms(self) -> int:
-        latencies = sorted(result.latency_ms for result in self.results)
-        return latencies[len(latencies) // 2] if latencies else 0
+    def generation_coverage(self) -> dict[str, dict[str, int]]:
+        """How many eligible questions produced each judge score."""
+        coverage: dict[str, dict[str, int]] = {}
+        for name in (
+            "faithfulness",
+            "answer_relevancy",
+            "correctness",
+            "context_precision",
+            "context_recall",
+            "correct_refusal",
+        ):
+            eligible = [
+                result
+                for result in self.results
+                if not result.error and ((name == "correct_refusal") == (result.type == "negative"))
+            ]
+            coverage[name] = {
+                "scored": sum(getattr(result.judge, name) is not None for result in eligible),
+                "total": len(eligible),
+            }
+        return coverage
+
+    @property
+    def median_latency_ms(self) -> float:
+        latencies = [result.latency_ms for result in self.results]
+        return median(latencies) if latencies else 0.0
 
     @property
     def failures(self) -> list[QuestionResult]:
@@ -89,6 +114,7 @@ class Report:
             lines += ["## Generation", "", f"_Skipped: {self.skipped_reason}_", ""]
         else:
             generation = self.generation
+            coverage = self.generation_coverage
             lines += [
                 "## Generation",
                 "",
@@ -97,7 +123,7 @@ class Report:
                 "|---|---|---|---|---|---|",
                 "| "
                 + " | ".join(
-                    _pct(generation[name])
+                    _metric_cell(generation[name], coverage[name])
                     for name in (
                         "faithfulness",
                         "answer_relevancy",
@@ -162,7 +188,10 @@ class Report:
                 "rerank": self.rerank,
                 "retrieval": asdict(self.retrieval),
                 "generation": self.generation,
+                "generation_coverage": self.generation_coverage,
                 "median_latency_ms": self.median_latency_ms,
+                "skipped_reason": self.skipped_reason,
+                "provenance": self.provenance,
                 "results": [asdict(result) for result in self.results],
             },
             indent=2,
@@ -205,6 +234,7 @@ def build_report(
     outcomes: list[RetrievalOutcome],
     results: list[QuestionResult],
     skipped_reason: str | None,
+    provenance: dict[str, object] | None = None,
 ) -> Report:
     from reed.evals.retrieval import aggregate
 
@@ -219,6 +249,7 @@ def build_report(
         retrieval=aggregate(outcomes),
         results=results,
         skipped_reason=skipped_reason,
+        provenance=provenance or {},
     )
 
 
@@ -229,3 +260,8 @@ def _mean(values: Iterable[float | None]) -> float | None:
 
 def _pct(value: float | None) -> str:
     return "—" if value is None else f"{value * 100:.0f}%"
+
+
+def _metric_cell(value: float | None, coverage: dict[str, int]) -> str:
+    score = _pct(value)
+    return f"{score} ({coverage['scored']}/{coverage['total']})"

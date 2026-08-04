@@ -11,7 +11,10 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from qdrant_client import models
+
 from reed.log import get_logger
+from reed.rag.vectorstore import COMMITTED_PAYLOAD_KEY
 
 if TYPE_CHECKING:
     from reed.services import Services
@@ -54,10 +57,28 @@ def retrieve(services: Services, query: str, top_k: int | None = None) -> list[R
     k = top_k or settings.top_k
     fetch_k = max(settings.fetch_k, k) if settings.rerank_enabled else k
 
+    services.flush_pending_vector_cleanup()
     store = services.vectorstore
     with services.vector_access:
-        hits = store.similarity_search_with_score(query, k=fetch_k)
+        hits = store.similarity_search_with_score(
+            query,
+            k=fetch_k,
+            filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key=COMMITTED_PAYLOAD_KEY,
+                        match=models.MatchValue(value=True),
+                    )
+                ]
+            ),
+        )
     chunks = [_to_chunk(document, score) for document, score in hits]
+    # Qdrant publication and SQLite status cannot share a transaction. There is
+    # therefore a tiny interval after a point batch is published but before its
+    # registry row becomes ready (and the inverse during deletion). Requiring
+    # both stores to agree closes that interval and also hides orphaned points.
+    ready_ids = services.registry.ready_ids([chunk.doc_id for chunk in chunks])
+    chunks = [chunk for chunk in chunks if chunk.doc_id in ready_ids]
 
     if settings.rerank_enabled and chunks:
         chunks = rerank(services, query, chunks)
@@ -96,6 +117,6 @@ def _to_chunk(document: object, score: float) -> RetrievedChunk:
         score=float(score),
         doc_id=str(metadata.get("doc_id", "")),
         filename=str(metadata.get("filename", "unknown")),
-        page=int(page) if isinstance(page, int) else None,
+        page=int(page) if isinstance(page, int) and not isinstance(page, bool) else None,
         section=str(metadata["section"]) if metadata.get("section") else None,
     )

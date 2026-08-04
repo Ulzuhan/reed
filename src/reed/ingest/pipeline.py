@@ -16,7 +16,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from reed.ingest.chunking import Chunk, split_sections
-from reed.ingest.parsers import parse_file
+from reed.ingest.parsers import (
+    DocumentLimitError,
+    EmptyDocumentError,
+    UnsupportedFileError,
+    parse_file,
+)
 from reed.ingest.registry import DocumentRecord
 from reed.log import get_logger
 
@@ -49,7 +54,10 @@ def sha256_file(path: Path) -> str:
 
 
 def document_id_for(sha256: str) -> str:
-    return f"d-{sha256[:12]}"
+    # 128 bits keeps ids compact while making birthday collisions negligible.
+    # Existing records keep their legacy ids because deduplication uses the full
+    # hash and returns the row already stored in the registry.
+    return f"d-{sha256[:32]}"
 
 
 def point_id_for(sha256: str, chunk_index: int) -> str:
@@ -71,31 +79,73 @@ def register_upload(
     doc_id = document_id_for(sha256)
 
     existing = services.registry.find_by_sha256(sha256)
-    # Only a previous failure earns a retry. Re-registering a document that is
-    # mid-ingestion would start a second run and truncate the stored file the
-    # first one is still reading.
-    if existing is not None and existing.status in {"ready", "pending", "processing"}:
-        return existing, True
-
+    if existing is not None and existing.status == "error":
+        # An earlier process may have died with staged points still present.
+        # Finish that generation's cleanup before claiming a new retry, so a
+        # delayed cleanup can never delete the retry's freshly published data.
+        services.schedule_vector_cleanup(existing.id)
+        services.flush_pending_vector_cleanup()
     stored_path = source
     if copy:
         services.settings.uploads_dir.mkdir(parents=True, exist_ok=True)
         stored_path = services.settings.uploads_dir / f"{doc_id}__{Path(filename).name}"
-        if source.resolve() != stored_path.resolve():
-            shutil.copyfile(source, stored_path)
 
-    record = services.registry.add(
+    record, duplicate = services.registry.claim_upload(
         doc_id=doc_id,
         filename=filename,
         sha256=sha256,
         size_bytes=source.stat().st_size,
         stored_path=str(stored_path),
     )
-    return record, False
+    if duplicate:
+        return record, True
+
+    claimed_path = Path(record.stored_path) if record.stored_path else source
+    try:
+        if copy and source.resolve() != claimed_path.resolve():
+            shutil.copyfile(source, claimed_path)
+    except Exception:
+        claimed_path.unlink(missing_ok=True)
+        services.registry.mark_error(record.id, "Could not store the uploaded file")
+        raise
+
+    # A retry under a differently named upload must not strand the old copy.
+    if (
+        existing is not None
+        and existing.status == "error"
+        and existing.stored_path
+        and Path(existing.stored_path) != claimed_path
+    ):
+        Path(existing.stored_path).unlink(missing_ok=True)
+
+    refreshed = services.registry.get(record.id)
+    assert refreshed is not None
+    return refreshed, False
 
 
 def process_document(services: Services, doc_id: str) -> IngestResult:
     """Parse, chunk, embed and upsert a document already in the registry."""
+    with services.ingestion_access:
+        try:
+            return _process_document(services, doc_id)
+        except Exception:
+            logger.exception("ingestion task crashed for %s", doc_id)
+            services.schedule_vector_cleanup(doc_id)
+            try:
+                services.registry.mark_error(
+                    doc_id,
+                    "Ingestion failed; inspect the server logs for details",
+                )
+            except Exception:
+                logger.exception("could not record ingestion failure for %s", doc_id)
+            return IngestResult(
+                document_id=doc_id,
+                status="error",
+                error="Ingestion failed; inspect the server logs for details",
+            )
+
+
+def _process_document(services: Services, doc_id: str) -> IngestResult:
     record = services.registry.get(doc_id)
     if record is None:
         return IngestResult(document_id=doc_id, status="error", error="unknown document")
@@ -103,16 +153,38 @@ def process_document(services: Services, doc_id: str) -> IngestResult:
         services.registry.mark_error(doc_id, "no stored file")
         return IngestResult(document_id=doc_id, status="error", error="no stored file")
 
-    services.registry.mark_processing(doc_id)
+    if not services.registry.mark_processing(doc_id):
+        current = services.registry.get(doc_id)
+        status = current.status if current else "missing"
+        return IngestResult(
+            document_id=doc_id,
+            status="error",
+            error=f"document is not pending (current status: {status})",
+        )
+    record = services.registry.get(doc_id)
+    assert record is not None
     try:
         chunks, pages = _embed_and_store(services, record)
     except Exception as exc:  # noqa: BLE001 — the message is surfaced to the user
-        message = f"{type(exc).__name__}: {exc}"
-        logger.warning("ingestion failed for %s: %s", record.filename, message)
+        internal = f"{type(exc).__name__}: {exc}"
+        message = _public_ingestion_error(exc)
+        logger.warning("ingestion failed for %s: %s", record.filename, internal)
+        services.schedule_vector_cleanup(doc_id)
+        try:
+            services.flush_pending_vector_cleanup()
+        except Exception as cleanup_exc:  # noqa: BLE001 — retried before the next search
+            logger.warning("deferred vector cleanup for %s: %s", doc_id, cleanup_exc)
         services.registry.mark_error(doc_id, message)
         return IngestResult(document_id=doc_id, status="error", error=message)
 
-    services.registry.mark_ready(doc_id, chunks=chunks, pages=pages)
+    if not services.registry.mark_ready(doc_id, chunks=chunks, pages=pages):
+        services.schedule_vector_cleanup(doc_id)
+        services.registry.mark_error(doc_id, "Ingestion could not be committed")
+        return IngestResult(
+            document_id=doc_id,
+            status="error",
+            error="Ingestion could not be committed",
+        )
     logger.info("ingested %s: %d chunks", record.filename, chunks)
     return IngestResult(document_id=doc_id, status="ready", chunks=chunks)
 
@@ -121,7 +193,11 @@ def _embed_and_store(services: Services, record: DocumentRecord) -> tuple[int, i
     settings = services.settings
     path = Path(record.stored_path or "")
 
-    kind, sections = parse_file(path)
+    kind, sections = parse_file(
+        path,
+        max_pages=settings.max_pdf_pages,
+        max_chars=settings.max_document_chars,
+    )
     chunks = split_sections(
         sections,
         source_type=kind,
@@ -129,19 +205,36 @@ def _embed_and_store(services: Services, record: DocumentRecord) -> tuple[int, i
         chunk_overlap=settings.chunk_overlap,
     )
     if not chunks:
-        raise ValueError("document produced no chunks")
+        raise EmptyDocumentError("Document produced no chunks")
 
     texts = [chunk.text for chunk in chunks]
     metadatas = [_metadata_for(record, chunk, kind) for chunk in chunks]
-    ids = [point_id_for(record.sha256, chunk.index) for chunk in chunks]
+    ids: list[int | str] = [point_id_for(record.sha256, chunk.index) for chunk in chunks]
+    qdrant_ids: list[int | str | uuid.UUID] = list(ids)
 
     store = services.vectorstore
     with services.vector_access:
+        # A retry may follow a partial write under a different chunking setup.
+        # Removing every old point first prevents obsolete trailing chunks.
+        from reed.rag.vectorstore import delete_document_points
+
+        if services.qdrant.collection_exists(settings.collection):
+            delete_document_points(services.qdrant, settings, record.id)
         store.add_texts(
             texts=texts,
             metadatas=metadatas,
             ids=ids,
             batch_size=UPSERT_BATCH_SIZE,
+        )
+        # A remote Qdrant can be queried while a multi-batch upload is still in
+        # progress. Publish every point in one payload update only after all
+        # batches succeeded; retrieval filters out the staging points.
+        services.qdrant.set_payload(
+            collection_name=settings.collection,
+            payload={"committed": True},
+            points=qdrant_ids,
+            key="metadata",
+            wait=True,
         )
 
     pages = max((c.page for c in chunks if c.page is not None), default=None)
@@ -158,6 +251,7 @@ def _metadata_for(record: DocumentRecord, chunk: Chunk, source_type: str) -> dic
         "section": chunk.section,
         "doc_sha256": record.sha256,
         "ingested_at": record.created_at,
+        "committed": False,
     }
 
 
@@ -187,21 +281,31 @@ def delete_document(services: Services, doc_id: str) -> bool:
     """
     from reed.rag.vectorstore import delete_document_points
 
-    record = services.registry.get(doc_id)
+    record, busy = services.registry.begin_delete(doc_id)
     if record is None:
         return False
-    if record.status in {"pending", "processing"}:
+    if busy:
         raise DocumentBusyError(
-            f"'{record.filename}' is still being ingested — try again once it is ready"
+            f"'{record.filename}' is busy — try again once the current operation finishes"
         )
 
-    with services.vector_access:
-        # The collection only exists once something has been ingested; a
-        # document that failed to parse may never have created it.
-        if services.qdrant.collection_exists(services.settings.collection):
-            delete_document_points(services.qdrant, services.settings, doc_id)
+    try:
+        with services.vector_access:
+            # The collection only exists once something has been ingested; a
+            # document that failed to parse may never have created it.
+            if services.qdrant.collection_exists(services.settings.collection):
+                delete_document_points(services.qdrant, services.settings, doc_id)
 
-    if record.stored_path:
-        Path(record.stored_path).unlink(missing_ok=True)
+        if record.stored_path:
+            Path(record.stored_path).unlink(missing_ok=True)
 
-    return services.registry.delete(doc_id)
+        return services.registry.delete(doc_id, expected_status="deleting")
+    except Exception:
+        services.registry.mark_error(doc_id, "Deletion was interrupted; retry deletion")
+        raise
+
+
+def _public_ingestion_error(exc: Exception) -> str:
+    if isinstance(exc, (DocumentLimitError, EmptyDocumentError, UnsupportedFileError)):
+        return str(exc)
+    return "Ingestion failed; inspect the server logs for details"

@@ -8,7 +8,27 @@ from pathlib import Path
 
 from reed import __version__
 from reed.config import get_settings
-from reed.log import setup_logging
+from reed.log import get_logger, setup_logging
+
+logger = get_logger(__name__)
+
+
+def _bounded_integer(value: str, *, minimum: int, maximum: int, name: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{name} must be an integer") from exc
+    if not minimum <= parsed <= maximum:
+        raise argparse.ArgumentTypeError(f"{name} must be between {minimum} and {maximum}")
+    return parsed
+
+
+def _port(value: str) -> int:
+    return _bounded_integer(value, minimum=1, maximum=65_535, name="port")
+
+
+def _top_k(value: str) -> int:
+    return _bounded_integer(value, minimum=1, maximum=50, name="k")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -18,7 +38,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     serve = sub.add_parser("serve", help="Run the HTTP API and chat UI")
     serve.add_argument("--host", default=None)
-    serve.add_argument("--port", type=int, default=None)
+    serve.add_argument("--port", type=_port, default=None)
     serve.add_argument("--reload", action="store_true", help="Autoreload on code changes")
 
     ingest = sub.add_parser("ingest", help="Ingest files or folders without starting the server")
@@ -28,9 +48,9 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument(
         "--retrieval-only",
         action="store_true",
-        help="Skip the LLM-judged metrics — needs no model at all",
+        help="Skip generation and the judge — only the configured embeddings are used",
     )
-    evaluate.add_argument("--k", type=int, default=None, help="Override top_k for this run")
+    evaluate.add_argument("--k", type=_top_k, default=None, help="Override top_k for this run")
     evaluate.add_argument(
         "--judge",
         choices=["openai", "local"],
@@ -51,11 +71,17 @@ def _serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     settings = get_settings()
+    host = args.host or settings.host
+    if host not in {"127.0.0.1", "localhost", "::1"} and not settings.api_key:
+        logger.warning(
+            "serving on %s without REED_API_KEY; restrict the network or configure auth",
+            host,
+        )
     uvicorn.run(
         "reed.api.app:create_app",
         factory=True,
-        host=args.host or settings.host,
-        port=args.port or settings.port,
+        host=host,
+        port=args.port if args.port is not None else settings.port,
         reload=args.reload,
         proxy_headers=True,
         log_level=settings.log_level.lower(),
@@ -72,17 +98,37 @@ def _ingest(args: argparse.Namespace) -> int:
     failures = 0
     try:
         for path in args.paths:
+            if not path.exists():
+                print(f"{path}: FAILED — path does not exist", file=sys.stderr)
+                failures += 1
+                continue
             if path.is_dir():
                 targets = sorted(
                     p
                     for p in path.rglob("*")
                     if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES
                 )
+                if not targets:
+                    print(f"{path}: FAILED — no supported documents found", file=sys.stderr)
+                    failures += 1
             else:
+                if path.suffix.lower() not in SUPPORTED_SUFFIXES:
+                    print(f"{path}: FAILED — unsupported file type", file=sys.stderr)
+                    failures += 1
+                    continue
                 targets = [path]
 
             for target in targets:
-                result = ingest_path(services, target)
+                try:
+                    result = ingest_path(services, target)
+                except Exception as exc:
+                    logger.debug("could not ingest %s", target, exc_info=True)
+                    print(
+                        f"{target.name}: FAILED — {type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                    )
+                    failures += 1
+                    continue
                 if result.duplicate:
                     print(f"{target.name}: already ingested ({result.chunks} chunks)")
                 elif result.status == "ready":
@@ -119,13 +165,20 @@ def _eval(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    setup_logging(get_settings().log_level)
-
-    if args.command == "ingest":
-        return _ingest(args)
-    if args.command == "eval":
-        return _eval(args)
-    return _serve(args)
+    try:
+        setup_logging(get_settings().log_level)
+        if args.command == "ingest":
+            return _ingest(args)
+        if args.command == "eval":
+            return _eval(args)
+        return _serve(args)
+    except KeyboardInterrupt:
+        print("reed: interrupted", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        logger.debug("command failed", exc_info=True)
+        print(f"reed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

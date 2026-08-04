@@ -12,6 +12,7 @@ def setup_logging(level: str = "INFO") -> None:
     """Install a single stderr handler for the ``reed`` logger tree."""
     global _CONFIGURED
     if _CONFIGURED:
+        logging.getLogger("reed").setLevel(level.upper())
         return
 
     handler = logging.StreamHandler(sys.stderr)

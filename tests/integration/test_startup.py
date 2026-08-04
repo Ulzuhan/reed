@@ -47,6 +47,16 @@ def test_a_collection_from_another_model_fails_the_boot(
         pass
 
 
+def test_same_dimension_but_different_chunking_also_fails_the_boot(
+    settings: Settings, tmp_path: Path
+) -> None:
+    ingest_something(settings, tmp_path)
+    changed = Settings.model_validate({**settings.model_dump(), "chunk_size": 900})
+
+    with pytest.raises(CollectionMismatchError, match="chunking"), TestClient(create_app(changed)):
+        pass
+
+
 def test_an_unreachable_provider_degrades_instead_of_failing(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -56,17 +66,17 @@ def test_an_unreachable_provider_degrades_instead_of_failing(
     monkeypatch.setattr("reed.providers.build_embeddings", explode)
 
     with TestClient(create_app(settings)) as client:
-        body = client.get("/health").json()
+        body = client.get("/ready").json()
 
     # The model may well come back without a restart, so Reed keeps serving —
     # but it must not claim the store is fine.
     assert body["status"] == "degraded"
-    assert "Ollama unreachable" in body["vector_store"]
+    assert body["vector_store"] == "unavailable"
 
 
 def test_a_healthy_startup_reports_ok(settings: Settings) -> None:
     with TestClient(create_app(settings)) as client:
-        body = client.get("/health").json()
+        body = client.get("/ready").json()
 
     assert body["status"] == "ok"
     assert body["vector_store"] == "ok"
