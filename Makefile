@@ -8,7 +8,7 @@ install: ## Install all dependencies (including dev)
 	uv sync
 
 dev: ## Run the API with autoreload on http://localhost:8000
-	uv run uvicorn reed.api.app:app --reload --port 8000
+	uv run uvicorn reed.api.app:create_app --factory --reload --port 8000
 
 lint: ## Check formatting and lint rules
 	uv run ruff check .
