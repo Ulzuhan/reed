@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 from reed import __version__
@@ -44,6 +45,28 @@ def _build_parser() -> argparse.ArgumentParser:
     ingest = sub.add_parser("ingest", help="Ingest files or folders without starting the server")
     ingest.add_argument("paths", nargs="+", type=Path)
 
+    index = sub.add_parser("index", help="Manage safe physical index generations")
+    index_sub = index.add_subparsers(dest="index_command", required=True)
+    index_sub.add_parser("status", help="Show active, previous and failed generations")
+    index_sub.add_parser("reindex", help="Build and atomically activate a complete new index")
+    index_sub.add_parser("rollback", help="Reactivate the most recent compatible generation")
+    cleanup = index_sub.add_parser("cleanup", help="Delete old non-active generations")
+    cleanup.add_argument(
+        "--keep",
+        type=lambda value: _bounded_integer(value, minimum=1, maximum=20, name="keep"),
+        default=2,
+        help="Keep this many active/previous generations (default: 2)",
+    )
+
+    backup = sub.add_parser("backup", help="Create, verify or restore an offline backup")
+    backup_sub = backup.add_subparsers(dest="backup_command", required=True)
+    create = backup_sub.add_parser("create", help="Archive REED_DATA_DIR with checksums")
+    create.add_argument("destination", nargs="?", type=Path, default=None)
+    verify = backup_sub.add_parser("verify", help="Verify every file against the manifest")
+    verify.add_argument("archive", type=Path)
+    restore = backup_sub.add_parser("restore", help="Restore into an empty REED_DATA_DIR")
+    restore.add_argument("archive", type=Path)
+
     evaluate = sub.add_parser("eval", help="Run the evaluation suite over the golden question set")
     evaluate.add_argument(
         "--retrieval-only",
@@ -51,6 +74,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip generation and the judge — only the configured embeddings are used",
     )
     evaluate.add_argument("--k", type=_top_k, default=None, help="Override top_k for this run")
+    evaluate.add_argument(
+        "--mode",
+        choices=["dense", "sparse", "hybrid", "hybrid_rerank"],
+        default=None,
+        help="Retrieval mode to isolate in this run",
+    )
     evaluate.add_argument(
         "--judge",
         choices=["openai", "local"],
@@ -151,6 +180,7 @@ def _eval(args: argparse.Namespace) -> int:
         top_k=args.k,
         judge_profile=args.judge,
         label=args.label,
+        retrieval_mode=getattr(args, "mode", None),
     )
     markdown, _ = report.write(RESULTS_DIR)
 
@@ -163,6 +193,80 @@ def _eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def _index(args: argparse.Namespace) -> int:
+    from reed.indexes import cleanup, reindex, rollback
+    from reed.services import build_services
+
+    services = build_services()
+    try:
+        if args.index_command == "status":
+            generations = services.registry.list_generations(services.settings.collection)
+            if not generations:
+                print("No index generation has been registered yet.")
+                return 0
+            for generation in generations:
+                digest = str(generation.fingerprint.get("dense_digest", ""))
+                digest_label = digest[:12] if digest else "unresolved"
+                print(
+                    f"{generation.status:8} {generation.id[:12]} "
+                    f"collection={generation.physical_collection} "
+                    f"documents={generation.document_count} chunks={generation.chunk_count} "
+                    f"model={generation.fingerprint.get('dense_model', 'unknown')} "
+                    f"digest={digest_label}"
+                )
+                if generation.error:
+                    print(f"         error={generation.error}")
+            return 0
+        if args.index_command == "reindex":
+            result = reindex(services)
+            print(
+                f"Activated generation {result.generation.id[:12]} "
+                f"({result.generation.document_count} documents, "
+                f"{result.generation.chunk_count} chunks)."
+            )
+            if result.previous is not None:
+                print(f"Previous generation retained for rollback: {result.previous.id[:12]}")
+            return 0
+        if args.index_command == "rollback":
+            activated, replaced = rollback(services)
+            print(
+                f"Activated generation {activated.id[:12]}; "
+                f"generation {replaced.id[:12]} is retained as previous."
+            )
+            return 0
+        removed = cleanup(services, keep=args.keep)
+        for generation in removed:
+            print(f"Removed generation {generation.id[:12]} ({generation.physical_collection}).")
+        if not removed:
+            print("No old index generations needed cleanup.")
+        return 0
+    finally:
+        services.close()
+
+
+def _backup(args: argparse.Namespace) -> int:
+    from reed.backups import create_backup, restore_backup, verify_backup
+
+    settings = get_settings()
+    if args.backup_command == "create":
+        destination = args.destination or Path(
+            f"reed-backup-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.tar.gz"
+        )
+        manifest = create_backup(settings.data_dir, destination)
+        print(f"Created {destination} ({len(manifest.files)} files).")
+        return 0
+    if args.backup_command == "verify":
+        manifest = verify_backup(args.archive)
+        print(
+            f"Verified {args.archive}: {len(manifest.files)} files, "
+            f"Reed {manifest.reed_version}, created {manifest.created_at}."
+        )
+        return 0
+    manifest = restore_backup(args.archive, settings.data_dir)
+    print(f"Restored {len(manifest.files)} files into {settings.data_dir}.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
@@ -171,6 +275,10 @@ def main(argv: list[str] | None = None) -> int:
             return _ingest(args)
         if args.command == "eval":
             return _eval(args)
+        if args.command == "index":
+            return _index(args)
+        if args.command == "backup":
+            return _backup(args)
         return _serve(args)
     except KeyboardInterrupt:
         print("reed: interrupted", file=sys.stderr)

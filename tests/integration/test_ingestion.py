@@ -6,8 +6,10 @@ hybrid upsert path and the deletion filter are all the real thing.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -74,30 +76,76 @@ def test_a_failed_partial_upsert_leaves_no_queryable_points(
 
     path = write_handbook(tmp_path, body=HANDBOOK * 20)
     record, _ = register_upload(services, source=path, filename=path.name)
-    store_type = type(services.vectorstore)
-    original = store_type.add_texts
+    _ = services.vectorstore
+    client_type = type(services.qdrant)
+    original = client_type.upsert
 
-    def fail_after_one(self: object, **kwargs: object) -> list[str]:
-        texts = kwargs["texts"]
-        metadatas = kwargs["metadatas"]
-        ids = kwargs["ids"]
-        assert isinstance(texts, list)
-        assert isinstance(metadatas, list)
-        assert isinstance(ids, list)
+    def fail_after_one(self: object, **kwargs: object) -> object:
+        points = kwargs["points"]
+        collection_name = kwargs["collection_name"]
+        assert isinstance(points, list)
+        assert isinstance(collection_name, str)
         original(
             self,  # type: ignore[arg-type]
-            texts=texts[:1],
-            metadatas=metadatas[:1],
-            ids=ids[:1],
+            collection_name=collection_name,
+            points=points[:1],
+            wait=True,
         )
         raise RuntimeError("secret provider failure")
 
-    monkeypatch.setattr(store_type, "add_texts", fail_after_one)
+    monkeypatch.setattr(client_type, "upsert", fail_after_one)
     result = process_document(services, record.id)
 
     assert result.status == "error"
     assert result.error == "Ingestion failed; inspect the server logs for details"
     assert count_points(services) == 0
+
+
+def test_embedding_metadata_does_not_pollute_stored_display_text(
+    services: Services, tmp_path: Path
+) -> None:
+    from reed.ingest.pipeline import ingest_path
+
+    path = tmp_path / "named-policy.md"
+    path.write_text("# Travel\n\nThe clean policy text.", encoding="utf-8")
+    assert ingest_path(services, path).status == "ready"
+
+    points, _ = services.qdrant.scroll(
+        services.active_collection_name,
+        limit=10,
+        with_payload=True,
+    )
+    page_content = str(points[0].payload["page_content"])  # type: ignore[index]
+    assert "The clean policy text." in page_content
+    assert "Title: named-policy.md" not in page_content
+    assert points[0].payload["metadata"]["section"] == "Travel"  # type: ignore[index]
+
+
+def test_dense_embedding_inference_happens_outside_qdrant_lock(
+    services: Services, tmp_path: Path
+) -> None:
+    from langchain_core.embeddings import Embeddings
+
+    from reed.ingest.pipeline import ingest_path
+
+    original = services.embeddings
+    _ = services.vectorstore
+
+    class LockCheckingEmbeddings(Embeddings):
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            assert not cast(Any, services.vector_access)._is_owned()
+            assert "Title: named-policy.md" in texts[0]
+            assert "Section: Travel" in texts[0]
+            return original.embed_documents(texts)
+
+        def embed_query(self, text: str) -> list[float]:
+            return original.embed_query(text)
+
+    services._embeddings = LockCheckingEmbeddings()
+    path = tmp_path / "named-policy.md"
+    path.write_text("# Travel\n\nThe clean policy text.", encoding="utf-8")
+
+    assert ingest_path(services, path).status == "ready"
 
 
 def test_retrieval_requires_vector_and_registry_commits(services: Services, tmp_path: Path) -> None:
@@ -198,8 +246,12 @@ def test_upload_endpoint_reports_progress_until_ready(client: TestClient, tmp_pa
     assert response.status_code == 202
     document_id = response.json()["document_id"]
 
-    # TestClient runs background tasks before returning, so it is already done.
+    deadline = time.monotonic() + 3
     detail = client.get(f"/v1/documents/{document_id}")
+    while detail.json()["status"] not in {"ready", "error"}:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+        detail = client.get(f"/v1/documents/{document_id}")
     assert detail.status_code == 200
     assert detail.json()["status"] == "ready"
     assert detail.json()["chunks"] >= 1
@@ -273,6 +325,11 @@ def test_deleting_through_the_api(client: TestClient, tmp_path: Path) -> None:
             "/v1/documents", files={"file": ("expenses.md", handle, "text/markdown")}
         ).json()["document_id"]
 
+    deadline = time.monotonic() + 3
+    while client.get(f"/v1/documents/{document_id}").json()["status"] != "ready":
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
     assert client.delete(f"/v1/documents/{document_id}").status_code == 204
     assert client.get(f"/v1/documents/{document_id}").status_code == 404
     assert client.delete(f"/v1/documents/{document_id}").status_code == 404
@@ -300,7 +357,10 @@ def test_a_failed_document_can_still_be_deleted(client: TestClient) -> None:
     # used to blow up on the missing collection and strand the row forever.
     response = client.post("/v1/documents", files={"file": ("empty.md", b"   \n", "text/markdown")})
     document_id = response.json()["document_id"]
-    assert client.get(f"/v1/documents/{document_id}").json()["status"] == "error"
+    deadline = time.monotonic() + 3
+    while client.get(f"/v1/documents/{document_id}").json()["status"] != "error":
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
 
     assert client.delete(f"/v1/documents/{document_id}").status_code == 204
     assert client.get(f"/v1/documents/{document_id}").status_code == 404
@@ -330,7 +390,7 @@ def test_reuploading_a_document_mid_ingestion_is_a_duplicate(
     again, duplicate = register_upload(services, source=path, filename="expenses.md")
 
     assert duplicate is True
-    assert again.status == "processing"
+    assert again.status == "parsing"
 
 
 def test_health_counts_documents(client: TestClient, tmp_path: Path) -> None:

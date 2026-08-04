@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from qdrant_client import models
+
 from reed.ingest.chunking import Chunk, split_sections
 from reed.ingest.parser_worker import parse_file_isolated
 from reed.ingest.parsers import (
@@ -26,6 +28,10 @@ from reed.ingest.registry import DocumentRecord
 from reed.log import get_logger
 
 if TYPE_CHECKING:
+    from langchain_core.embeddings import Embeddings
+    from langchain_qdrant import QdrantVectorStore
+    from langchain_qdrant.sparse_embeddings import SparseEmbeddings
+
     from reed.services import Services
 
 logger = get_logger(__name__)
@@ -71,7 +77,7 @@ def register_upload(
     filename: str,
     copy: bool = True,
 ) -> tuple[DocumentRecord, bool]:
-    """Record a file as pending ingestion.
+    """Record a file as durably queued for ingestion.
 
     Returns the record and whether it duplicates one Reed already has.
     """
@@ -127,7 +133,9 @@ def process_document(services: Services, doc_id: str) -> IngestResult:
     """Parse, chunk, embed and upsert a document already in the registry."""
     with services.ingestion_access:
         try:
-            return _process_document(services, doc_id)
+            result = _process_document(services, doc_id)
+            services.metrics.increment(f'ingestions_total{{status="{result.status}"}}')
+            return result
         except Exception:
             logger.exception("ingestion task crashed for %s", doc_id)
             services.schedule_vector_cleanup(doc_id)
@@ -138,6 +146,7 @@ def process_document(services: Services, doc_id: str) -> IngestResult:
                 )
             except Exception:
                 logger.exception("could not record ingestion failure for %s", doc_id)
+            services.metrics.increment('ingestions_total{status="error"}')
             return IngestResult(
                 document_id=doc_id,
                 status="error",
@@ -164,7 +173,7 @@ def _process_document(services: Services, doc_id: str) -> IngestResult:
     record = services.registry.get(doc_id)
     assert record is not None
     try:
-        chunks, pages = _embed_and_store(services, record)
+        chunks, pages = index_record_into(services, record, track_status=True)
     except Exception as exc:  # noqa: BLE001 — the message is surfaced to the user
         internal = f"{type(exc).__name__}: {exc}"
         message = _public_ingestion_error(exc)
@@ -189,7 +198,17 @@ def _process_document(services: Services, doc_id: str) -> IngestResult:
     return IngestResult(document_id=doc_id, status="ready", chunks=chunks)
 
 
-def _embed_and_store(services: Services, record: DocumentRecord) -> tuple[int, int | None]:
+def index_record_into(
+    services: Services,
+    record: DocumentRecord,
+    *,
+    store: QdrantVectorStore | None = None,
+    collection_name: str | None = None,
+    embeddings: Embeddings | None = None,
+    sparse_embeddings: SparseEmbeddings | None = None,
+    track_status: bool = False,
+) -> tuple[int, int | None]:
+    """Parse and index one stored original into a selected generation."""
     settings = services.settings
     path = Path(record.stored_path or "")
 
@@ -209,31 +228,77 @@ def _embed_and_store(services: Services, record: DocumentRecord) -> tuple[int, i
     )
     if not chunks:
         raise EmptyDocumentError("Document produced no chunks")
+    if track_status and not services.registry.mark_stage(
+        record.id, current="parsing", next="embedding"
+    ):
+        raise RuntimeError("document left the parsing stage unexpectedly")
 
-    texts = [chunk.text for chunk in chunks]
+    display_texts = [chunk.text for chunk in chunks]
     metadatas = [_metadata_for(record, chunk, kind) for chunk in chunks]
     ids: list[int | str] = [point_id_for(record.sha256, chunk.index) for chunk in chunks]
     qdrant_ids: list[int | str | uuid.UUID] = list(ids)
 
-    store = services.vectorstore
+    # Ensure the collection exists. Candidate reindexes pass an already-built
+    # store because the active generation may intentionally be incompatible.
+    _ = store or services.vectorstore
+    selected_collection = collection_name or services.active_collection_name
+    dense_model = embeddings or services.embeddings
+    sparse_model = sparse_embeddings or services.sparse_embeddings
+    embedding_texts = [
+        _embedding_text(record, chunk, display_text)
+        for chunk, display_text in zip(chunks, display_texts, strict=True)
+    ]
+
+    # Model inference is deliberately outside vector_access. Embedded Qdrant
+    # needs short serialised mutations, not a global lock around minutes of CPU
+    # or provider latency.
+    dense_vectors = dense_model.embed_documents(embedding_texts)
+    sparse_vectors = sparse_model.embed_documents(embedding_texts)
+    if track_status and not services.registry.mark_stage(
+        record.id, current="embedding", next="indexing"
+    ):
+        raise RuntimeError("document left the embedding stage unexpectedly")
+    points = [
+        models.PointStruct(
+            id=point_id,
+            vector={
+                "dense": dense,
+                "sparse": models.SparseVector(indices=sparse.indices, values=sparse.values),
+            },
+            payload={"page_content": display, "metadata": metadata},
+        )
+        for point_id, dense, sparse, display, metadata in zip(
+            qdrant_ids,
+            dense_vectors,
+            sparse_vectors,
+            display_texts,
+            metadatas,
+            strict=True,
+        )
+    ]
     with services.vector_access:
         # A retry may follow a partial write under a different chunking setup.
         # Removing every old point first prevents obsolete trailing chunks.
         from reed.rag.vectorstore import delete_document_points
 
-        if services.qdrant.collection_exists(settings.collection):
-            delete_document_points(services.qdrant, settings, record.id)
-        store.add_texts(
-            texts=texts,
-            metadatas=metadatas,
-            ids=ids,
-            batch_size=UPSERT_BATCH_SIZE,
-        )
+        if services.qdrant.collection_exists(selected_collection):
+            delete_document_points(
+                services.qdrant,
+                settings,
+                record.id,
+                collection_name=selected_collection,
+            )
+        for offset in range(0, len(points), UPSERT_BATCH_SIZE):
+            services.qdrant.upsert(
+                collection_name=selected_collection,
+                points=points[offset : offset + UPSERT_BATCH_SIZE],
+                wait=True,
+            )
         # A remote Qdrant can be queried while a multi-batch upload is still in
         # progress. Publish every point in one payload update only after all
         # batches succeeded; retrieval filters out the staging points.
         services.qdrant.set_payload(
-            collection_name=settings.collection,
+            collection_name=selected_collection,
             payload={"committed": True},
             points=qdrant_ids,
             key="metadata",
@@ -242,6 +307,13 @@ def _embed_and_store(services: Services, record: DocumentRecord) -> tuple[int, i
 
     pages = max((c.page for c in chunks if c.page is not None), default=None)
     return len(chunks), pages
+
+
+def _embedding_text(record: DocumentRecord, chunk: Chunk, display_text: str) -> str:
+    """Add provenance for retrieval without polluting prompts or citations."""
+    title = record.filename
+    section = chunk.section or "(document root)"
+    return f"Title: {title}\nSection: {section}\n\n{display_text}"
 
 
 def _metadata_for(record: DocumentRecord, chunk: Chunk, source_type: str) -> dict[str, object]:
@@ -296,8 +368,14 @@ def delete_document(services: Services, doc_id: str) -> bool:
         with services.vector_access:
             # The collection only exists once something has been ingested; a
             # document that failed to parse may never have created it.
-            if services.qdrant.collection_exists(services.settings.collection):
-                delete_document_points(services.qdrant, services.settings, doc_id)
+            collection_name = services.active_collection_name
+            if services.qdrant.collection_exists(collection_name):
+                delete_document_points(
+                    services.qdrant,
+                    services.settings,
+                    doc_id,
+                    collection_name=collection_name,
+                )
 
         if record.stored_path:
             Path(record.stored_path).unlink(missing_ok=True)

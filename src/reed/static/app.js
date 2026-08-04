@@ -16,6 +16,7 @@ const els = {
   fileInput: $("file-input"),
   uploadButton: $("upload-button"),
   uploader: $("uploader"),
+  uploadProgress: $("upload-progress"),
   docList: $("doc-list"),
   docEmpty: $("doc-empty"),
   docCounter: $("doc-counter"),
@@ -35,6 +36,7 @@ const SAMPLE_QUESTIONS = [
 
 const history = [];
 let busy = false;
+let askController = null;
 
 // Migrate once from the older persistent storage. A tab-scoped credential
 // limits exposure to future same-origin scripts and disappears when the tab closes.
@@ -121,7 +123,7 @@ function renderDocuments(documents, total = documents.length) {
     remove.addEventListener("click", () => removeDocument(doc.id));
     item.append(remove);
 
-    const busyDoc = doc.status === "pending" || doc.status === "processing" || doc.status === "deleting";
+    const busyDoc = ["pending", "processing", "queued", "parsing", "embedding", "indexing", "deleting"].includes(doc.status);
     const meta = el("span", `doc-meta${doc.status === "error" ? " error" : ""}`);
     if (busyDoc) {
       meta.append(el("span", "spin", "⟳"), document.createTextNode(` ${doc.status}…`));
@@ -136,7 +138,7 @@ function renderDocuments(documents, total = documents.length) {
   }
 
   const stillWorking = documents.some((d) =>
-    ["pending", "processing", "deleting"].includes(d.status),
+    ["pending", "processing", "queued", "parsing", "embedding", "indexing", "deleting"].includes(d.status),
   );
   clearTimeout(pollTimer);
   if (stillWorking) pollTimer = setTimeout(refreshDocuments, 1200);
@@ -171,17 +173,55 @@ async function removeDocument(id) {
 
 async function uploadFiles(files) {
   for (const file of files) {
-    const body = new FormData();
-    body.append("file", file);
     try {
-      await api("/v1/documents", { method: "POST", body });
+      await uploadFile(file);
     } catch (error) {
       if (!/already been ingested/i.test(error.message)) {
         alert(`${file.name}: ${error.message}`);
       }
     }
   }
+  els.uploadProgress.textContent = "or drop PDF, Markdown and text files here";
   refreshDocuments();
+}
+
+function uploadFile(file) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", "/v1/documents");
+    const key = apiKey();
+    if (key) request.setRequestHeader("X-API-Key", key);
+    request.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable) return;
+      const percent = Math.round((event.loaded / event.total) * 100);
+      els.uploadProgress.textContent = `${file.name}: uploading ${percent}%`;
+    });
+    request.addEventListener("load", () => {
+      let body = null;
+      try {
+        body = JSON.parse(request.responseText);
+      } catch {
+        /* retain the HTTP status as fallback */
+      }
+      if (request.status >= 200 && request.status < 300) {
+        els.uploadProgress.textContent = `${file.name}: queued for ingestion`;
+        resolve(body);
+        return;
+      }
+      const detail = body?.detail;
+      reject(
+        new Error(
+          typeof detail === "string"
+            ? detail
+            : detail?.message || `${request.status} ${request.statusText}`,
+        ),
+      );
+    });
+    request.addEventListener("error", () => reject(new Error("Upload connection failed")));
+    const form = new FormData();
+    form.append("file", file);
+    request.send(form);
+  });
 }
 
 /* -------------------------------------------------------------------- chat */
@@ -274,7 +314,9 @@ function addMessage(role) {
 async function ask(question) {
   if (busy || !question.trim()) return;
   busy = true;
-  els.send.disabled = true;
+  askController = new AbortController();
+  els.send.textContent = "Stop";
+  els.send.title = "Stop generation";
 
   addMessage("user").bubble.textContent = question;
   const { bubble, sources: sourcesBox } = addMessage("assistant");
@@ -290,8 +332,19 @@ async function ask(question) {
       method: "POST",
       headers: headers({ "Content-Type": "application/json" }),
       body: JSON.stringify({ question, history: history.slice(-6), stream: true }),
+      signal: askController.signal,
     });
-    if (!response.ok || !response.body) throw new Error(`${response.status} ${response.statusText}`);
+    if (!response.ok || !response.body) {
+      let message = `${response.status} ${response.statusText}`;
+      try {
+        const body = await response.json();
+        const detail = body.detail;
+        message = typeof detail === "string" ? detail : detail?.message || message;
+      } catch {
+        /* retain status */
+      }
+      throw new Error(message);
+    }
 
     for await (const event of readEvents(response.body)) {
       if (event.name === "sources") {
@@ -314,12 +367,18 @@ async function ask(question) {
 
     history.push({ role: "user", content: question }, { role: "assistant", content: answer });
   } catch (error) {
-    bubble.classList.add("failed");
-    bubble.textContent = `Something went wrong: ${error.message}`;
+    if (error.name === "AbortError") {
+      bubble.textContent = answer ? `${answer}\n\nStopped.` : "Stopped.";
+    } else {
+      bubble.classList.add("failed");
+      bubble.textContent = `Something went wrong: ${error.message}`;
+    }
   } finally {
     bubble.classList.remove("typing");
     busy = false;
-    els.send.disabled = false;
+    askController = null;
+    els.send.textContent = "Ask";
+    els.send.title = "Send (Enter)";
     scrollToBottom();
   }
 }
@@ -367,6 +426,10 @@ async function* readEvents(body) {
 
 els.composer.addEventListener("submit", (event) => {
   event.preventDefault();
+  if (busy) {
+    askController?.abort();
+    return;
+  }
   const question = els.question.value;
   els.question.value = "";
   els.question.style.height = "auto";

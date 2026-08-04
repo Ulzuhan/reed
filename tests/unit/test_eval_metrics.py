@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from reed.evals.dataset import GoldenQuestion, load_golden
+from reed.evals.dataset import EvidenceLabel, GoldenQuestion, load_golden
 from reed.evals.judge import (
     ChunkRelevance,
     Judge,
@@ -84,6 +84,75 @@ def test_multi_hop_needs_every_expected_document() -> None:
     partial = outcome(["a.md", "b.md"], ["a.md", "z.md"])
     assert partial.hit_at_k is True
     assert partial.full_coverage is False
+
+
+def test_exact_evidence_not_just_the_right_document_is_required() -> None:
+    labelled = question(
+        evidence=[
+            EvidenceLabel(
+                id="threshold",
+                document="04-expenses.md",
+                text="above 75 euros",
+            )
+        ]
+    )
+
+    wrong_chunk = chunk("04-expenses.md")
+    wrong_chunk = RetrievedChunk(
+        text="This is the correct file but a different section.",
+        score=wrong_chunk.score,
+        doc_id=wrong_chunk.doc_id,
+        filename=wrong_chunk.filename,
+        page=None,
+        section=None,
+    )
+    right_chunk = RetrievedChunk(
+        text="Expenses above 75 euros need approval.",
+        score=0.8,
+        doc_id="d-expenses",
+        filename="04-expenses.md",
+        page=None,
+        section=None,
+    )
+
+    result = score(labelled, [wrong_chunk, right_chunk])
+
+    assert result.hit_at_1 is False
+    assert result.reciprocal_rank == 0.5
+    assert result.recall_at_k == 1.0
+    assert result.ndcg_at_k < 1.0
+
+
+def test_evidence_recall_counts_distinct_multi_hop_labels() -> None:
+    result = RetrievalOutcome(
+        question_id="q",
+        question_type="multi_hop",
+        expected_docs=["a.md", "b.md"],
+        retrieved_docs=["a.md"],
+        expected_evidence_ids=["a", "b"],
+        covered_evidence_ids=["a"],
+        gains=[1, 0],
+    )
+
+    assert result.recall_at_k == 0.5
+    assert result.full_coverage is False
+
+
+def test_negative_abstention_and_bootstrap_are_reported() -> None:
+    answerable = outcome(["a.md"], ["a.md"])
+    negative = RetrievalOutcome(
+        question_id="q-neg",
+        question_type="negative",
+        expected_docs=[],
+        retrieved_docs=[],
+        abstained=True,
+    )
+
+    metrics = aggregate([answerable, negative], bootstrap_samples=50)
+
+    assert metrics.negative_abstention == 1.0
+    assert metrics.abstention_accuracy == 1.0
+    assert "recall_at_k" in metrics.confidence_intervals
 
 
 def test_empty_retrieval_scores_zero_without_crashing() -> None:

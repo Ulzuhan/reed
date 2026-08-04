@@ -10,14 +10,19 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib.metadata
+import os
 import platform
+import re
+import subprocess
 import tempfile
 import time
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import anyio.to_thread
 
-from reed.config import Profile, Settings, get_settings
+from reed.config import Profile, RetrievalMode, Settings, get_settings
 from reed.evals.dataset import (
     CORPUS_DIR,
     GOLDEN_PATH,
@@ -37,9 +42,10 @@ logger = get_logger(__name__)
 
 
 def default_label(settings: Settings) -> str:
-    parts = [settings.profile, f"k={settings.top_k}"]
-    if settings.rerank_enabled:
-        parts.append("rerank")
+    parts: list[str] = [settings.profile]
+    if settings.retrieval_mode != "hybrid":
+        parts.append(settings.retrieval_mode)
+    parts.append(f"k={settings.top_k}")
     return ", ".join(parts)
 
 
@@ -53,6 +59,7 @@ def run_evaluation(
     golden_path: Path | None = None,
     results_dir: Path | None = None,
     settings: Settings | None = None,
+    retrieval_mode: RetrievalMode | None = None,
 ) -> Report:
     return asyncio.run(
         _run(
@@ -64,6 +71,7 @@ def run_evaluation(
             golden_path=golden_path,
             results_dir=results_dir,
             settings=settings,
+            retrieval_mode=retrieval_mode,
         )
     )
 
@@ -78,6 +86,7 @@ async def _run(
     golden_path: Path | None,
     results_dir: Path | None,
     settings: Settings | None,
+    retrieval_mode: RetrievalMode | None,
 ) -> Report:
     base = settings or get_settings()
     questions = load_golden(golden_path)
@@ -96,6 +105,7 @@ async def _run(
                 "data_dir": Path(scratch),
                 "collection": "reed_eval",
                 "top_k": base.top_k if top_k is None else top_k,
+                "retrieval_mode": retrieval_mode or base.retrieval_mode,
             }
         )
         services = build_services(run_settings)
@@ -220,6 +230,7 @@ async def _evaluate(
         results=results,
         skipped_reason=skipped_reason,
         provenance=provenance,
+        retrieval_mode=settings.retrieval_mode,
     )
 
 
@@ -237,8 +248,21 @@ async def _evaluate_one(
         # and searched, so the chat model is never touched.
         return await _retrieve_only(services, question)
 
+    from reed.rag.retriever import retrieve
+
+    # Generation exercises the configured policy, including abstention. A
+    # threshold-free query also preserves the complete score distribution for
+    # comparable retrieval metrics and post-hoc calibration.
+    raw_chunks = await anyio.to_thread.run_sync(
+        lambda: retrieve(
+            services,
+            question.question,
+            services.settings.top_k,
+            apply_threshold=False,
+        )
+    )
     answered = await answer_question(services, question.question)
-    outcome = score(question, answered.sources)
+    outcome = score(question, raw_chunks, abstained=not answered.sources)
 
     if answered.error:
         # A dead provider would otherwise be recorded as a low quality score.
@@ -252,6 +276,7 @@ async def _evaluate_one(
             [chunk.text for chunk in answered.sources],
         )
 
+    evidence = _evidence_result_fields(question, raw_chunks, outcome, answered.text)
     result = QuestionResult(
         id=question.id,
         type=question.type,
@@ -263,6 +288,14 @@ async def _evaluate_one(
         latency_ms=answered.latency_ms,
         judge=scores,
         error=answered.error,
+        expected_evidence=evidence.expected_evidence,
+        covered_evidence=evidence.covered_evidence,
+        recall_at_k=evidence.recall_at_k,
+        ndcg_at_k=evidence.ndcg_at_k,
+        retrieved_chunks=evidence.retrieved_chunks,
+        abstained=evidence.abstained,
+        citation_status=evidence.citation_status,
+        warnings=evidence.warnings,
     )
     return result, outcome
 
@@ -276,9 +309,17 @@ async def _retrieve_only(
 
     started = time.perf_counter()
     chunks = await anyio.to_thread.run_sync(
-        lambda: retrieve(services, question.question, services.settings.top_k)
+        lambda: retrieve(
+            services,
+            question.question,
+            services.settings.top_k,
+            apply_threshold=False,
+        )
     )
-    outcome = score(question, chunks)
+    threshold = services.settings.resolved_min_evidence_score
+    policy_abstained = not chunks or bool(threshold and chunks[0].score < threshold)
+    outcome = score(question, chunks, abstained=policy_abstained)
+    evidence = _evidence_result_fields(question, chunks, outcome, "")
     return (
         QuestionResult(
             id=question.id,
@@ -290,6 +331,14 @@ async def _retrieve_only(
             reciprocal_rank=outcome.reciprocal_rank,
             latency_ms=int((time.perf_counter() - started) * 1000),
             judge=JudgeScores(),
+            expected_evidence=evidence.expected_evidence,
+            covered_evidence=evidence.covered_evidence,
+            recall_at_k=evidence.recall_at_k,
+            ndcg_at_k=evidence.ndcg_at_k,
+            retrieved_chunks=evidence.retrieved_chunks,
+            abstained=evidence.abstained,
+            citation_status=evidence.citation_status,
+            warnings=evidence.warnings,
         ),
         outcome,
     )
@@ -315,6 +364,18 @@ def _provenance(
         except importlib.metadata.PackageNotFoundError:
             versions[package] = "not-installed"
 
+    try:
+        from reed.model_identity import resolve_embedding_identity
+
+        identity = resolve_embedding_identity(settings)
+        model_identity: dict[str, object] = {
+            "digest": identity.digest,
+            "revision": identity.revision,
+            "quantization": identity.quantization,
+        }
+    except Exception as exc:  # noqa: BLE001 — partial provenance is still useful
+        model_identity = {"warning": f"{type(exc).__name__}: {exc}"}
+
     return {
         "configuration": {
             "top_k": settings.top_k,
@@ -322,6 +383,7 @@ def _provenance(
             "rerank_enabled": settings.rerank_enabled,
             "rerank_model": settings.rerank_model,
             "dense_model": settings.embed_model_name,
+            "retrieval_mode": settings.retrieval_mode,
             "sparse_model": settings.sparse_model,
             "query_prefix": settings.resolved_query_prefix,
             "document_prefix": settings.resolved_doc_prefix,
@@ -330,6 +392,8 @@ def _provenance(
             "max_context_chars": settings.max_context_chars,
             "temperature": settings.temperature,
             "max_output_tokens": settings.max_output_tokens,
+            "configured_min_evidence_score": settings.min_evidence_score,
+            "resolved_min_evidence_score": settings.resolved_min_evidence_score,
         },
         "dataset": {
             "corpus_sha256": _corpus_digest(corpus),
@@ -337,6 +401,14 @@ def _provenance(
             "documents": [path.name for path in corpus],
         },
         "versions": versions,
+        "model_identity": model_identity,
+        "runtime": {
+            "git_sha": _git_sha(),
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "processor": platform.processor(),
+            "cpu_count": os.cpu_count(),
+        },
     }
 
 
@@ -360,3 +432,79 @@ def _json_fingerprint(values: dict[str, object]) -> str:
     return hashlib.sha256(
         json.dumps(values, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:12]
+
+
+_CITATION = re.compile(r"\[(\d+)]")
+
+
+@dataclass(frozen=True, slots=True)
+class _EvidenceResult:
+    expected_evidence: list[str]
+    covered_evidence: list[str]
+    recall_at_k: float
+    ndcg_at_k: float
+    retrieved_chunks: list[dict[str, object]]
+    abstained: bool
+    citation_status: str
+    warnings: list[str]
+
+
+def _evidence_result_fields(
+    question: GoldenQuestion,
+    chunks: Sequence[object],
+    outcome: RetrievalOutcome,
+    answer: str,
+) -> _EvidenceResult:
+    from reed.evals.retrieval import matched_evidence
+
+    exact_chunks: list[dict[str, object]] = []
+    for rank, chunk in enumerate(chunks, start=1):
+        exact_chunks.append(
+            {
+                "rank": rank,
+                "text": str(getattr(chunk, "text", "")),
+                "score": float(getattr(chunk, "score", 0.0)),
+                "doc_id": str(getattr(chunk, "doc_id", "")),
+                "filename": str(getattr(chunk, "filename", "")),
+                "page": getattr(chunk, "page", None),
+                "section": getattr(chunk, "section", None),
+                "matched_evidence": matched_evidence(question, chunk),  # type: ignore[arg-type]
+            }
+        )
+    citations = [int(value) for value in _CITATION.findall(answer)]
+    citation_status = "not_checked"
+    if answer:
+        citation_status = (
+            "valid"
+            if citations and all(1 <= citation <= len(chunks) for citation in citations)
+            else "missing_or_invalid"
+        )
+    warnings: list[str] = []
+    if question.expected_docs and not question.evidence:
+        warnings.append("document-level fallback: no exact evidence labels supplied")
+    if answer and citation_status != "valid":
+        warnings.append("answer has no valid source citation")
+    return _EvidenceResult(
+        expected_evidence=list(outcome.expected_evidence_ids),
+        covered_evidence=list(outcome.covered_evidence_ids),
+        recall_at_k=outcome.recall_at_k,
+        ndcg_at_k=outcome.ndcg_at_k,
+        retrieved_chunks=exact_chunks,
+        abstained=outcome.abstained,
+        citation_status=citation_status,
+        warnings=warnings,
+    )
+
+
+def _git_sha() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable"
+    return result.stdout.strip() or "unavailable"

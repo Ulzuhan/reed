@@ -8,7 +8,6 @@ from pathlib import Path
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     HTTPException,
     Query,
@@ -23,7 +22,6 @@ from reed.ingest.parsers import UnsupportedFileError, source_type
 from reed.ingest.pipeline import (
     DocumentBusyError,
     delete_document,
-    process_document,
     register_upload,
 )
 from reed.ingest.registry import DocumentRecord
@@ -54,9 +52,15 @@ def _to_info(record: DocumentRecord) -> DocumentInfo:
 @router.post("", response_model=UploadAccepted, status_code=status.HTTP_202_ACCEPTED)
 async def upload_document(
     services: ServicesDep,
-    background: BackgroundTasks,
     file: UploadFile,
 ) -> UploadAccepted:
+    if services.ingestion_queue_full:
+        services.metrics.increment("upload_rejections_total")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The ingestion queue is full; retry after current work completes",
+            headers={"Retry-After": "2"},
+        )
     filename = _safe_filename(file.filename or "upload")
     try:
         source_type(Path(filename))
@@ -112,7 +116,17 @@ async def upload_document(
             },
         )
 
-    background.add_task(process_document, services, record.id)
+    if not services.enqueue_ingestion(record.id):
+        services.metrics.increment("upload_rejections_total")
+        if record.stored_path:
+            Path(record.stored_path).unlink(missing_ok=True)
+        services.registry.delete(record.id, expected_status="queued")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The ingestion queue filled concurrently; retry shortly",
+            headers={"Retry-After": "2"},
+        )
+    services.metrics.increment("uploads_total")
     return UploadAccepted(document_id=record.id, filename=record.filename, status=record.status)
 
 

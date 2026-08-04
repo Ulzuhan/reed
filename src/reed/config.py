@@ -16,11 +16,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Profile = Literal["openai", "local", "fake"]
 LogLevel = Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"]
+RetrievalMode = Literal["dense", "sparse", "hybrid", "hybrid_rerank"]
 
 # EmbeddingGemma is trained with task prefixes and loses accuracy without them.
 # https://ai.google.dev/gemma/docs/embeddinggemma/model_card
 EMBEDDINGGEMMA_QUERY_PREFIX = "task: search result | query: "
-EMBEDDINGGEMMA_DOC_PREFIX = "title: none | text: "
+# Document titles/sections are injected per chunk by the ingestion pipeline;
+# keeping a static "title: none" prefix would throw that signal away.
+EMBEDDINGGEMMA_DOC_PREFIX = ""
+QWEN3_EMBED_QUERY_PREFIX = (
+    "Instruct: Given a user query, retrieve relevant passages that answer the query\nQuery:"
+)
+EMBEDDINGGEMMA_HYBRID_MIN_SCORE = 0.8333333333333333
 
 
 class Settings(BaseSettings):
@@ -50,6 +57,12 @@ class Settings(BaseSettings):
     ollama_chat_model: str = "qwen3.5:4b"
     ollama_embed_model: str = "embeddinggemma"
 
+    # Immutable identity for hosted/custom providers. Ollama resolves these
+    # fields from its local API unless explicit overrides are supplied.
+    embed_model_digest: str = ""
+    embed_model_revision: str = ""
+    embed_model_quantization: str = ""
+
     # Task prefixes for embeddings. ``None`` means "use the profile default",
     # an empty string means "explicitly disabled".
     embed_query_prefix: str | None = None
@@ -64,10 +77,18 @@ class Settings(BaseSettings):
     # --- Retrieval ------------------------------------------------------
     top_k: int = Field(default=4, ge=1, le=50)
     fetch_k: int = Field(default=20, ge=1, le=200)
+    retrieval_mode: RetrievalMode = "hybrid"
     rerank_enabled: bool = False
-    rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    rerank_backend: Literal["fastembed", "sentence_transformers"] = "sentence_transformers"
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"
     sparse_model: str = "Qdrant/bm25"
     max_context_chars: int = Field(default=24_000, ge=1_000, le=200_000)
+    max_chunks_per_document: int = Field(default=2, ge=1, le=20)
+    diversity_enabled: bool = True
+    diversity_lambda: float = Field(default=0.7, ge=0.0, le=1.0)
+    # ``None`` selects the calibrated preset when its exact score domain is in
+    # use. A numeric value is always an explicit operator override.
+    min_evidence_score: float | None = Field(default=None, ge=0.0, le=1.0)
 
     # --- Ingestion ------------------------------------------------------
     chunk_size: int = Field(default=1000, ge=100, le=8000)
@@ -92,13 +113,18 @@ class Settings(BaseSettings):
     startup_grace_seconds: float = Field(default=2.0, ge=0.0, le=10.0)
     readiness_retry_initial_seconds: float = Field(default=2.0, ge=0.05, le=60.0)
     readiness_retry_max_seconds: float = Field(default=60.0, ge=0.05, le=600.0)
+    readiness_chat_ttl_seconds: float = Field(default=15.0, ge=0.0, le=300.0)
     max_output_tokens: int = Field(default=1_024, ge=64, le=8_192)
     max_concurrent_asks: int = Field(default=8, ge=1, le=100)
     max_concurrent_ingestions: int = Field(default=2, ge=1, le=32)
+    max_queued_ingestions: int = Field(default=16, ge=1, le=1_000)
     ask_rate_limit_per_minute: int = Field(default=60, ge=0, le=10_000)
     upload_rate_limit_per_minute: int = Field(default=20, ge=0, le=10_000)
     sse_queue_size: int = Field(default=64, ge=4, le=4_096)
     max_json_body_kb: int = Field(default=128, ge=16, le=1_024)
+    # Compose-only sizing knob, kept here so every REED_* setting has one
+    # documented source of truth and parity tests can prevent drift.
+    tmpfs_size: str = "64m"
 
     # --- Evaluation -----------------------------------------------------
     eval_judge_profile: Profile = "openai"
@@ -163,6 +189,8 @@ class Settings(BaseSettings):
             return self.embed_query_prefix
         if self.profile == "local" and "embeddinggemma" in self.ollama_embed_model.lower():
             return EMBEDDINGGEMMA_QUERY_PREFIX
+        if self.profile == "local" and "qwen3-embedding" in self.ollama_embed_model.lower():
+            return QWEN3_EMBED_QUERY_PREFIX
         return ""
 
     @property
@@ -193,7 +221,26 @@ class Settings(BaseSettings):
     @property
     def effective_fetch_k(self) -> int:
         """How many candidates retrieval pulls before (optional) reranking."""
-        return max(self.fetch_k, self.top_k) if self.rerank_enabled else self.top_k
+        rerank = self.rerank_enabled or self.retrieval_mode == "hybrid_rerank"
+        return max(self.fetch_k, self.top_k) if rerank else self.top_k
+
+    @property
+    def resolved_min_evidence_score(self) -> float:
+        """Return a threshold valid for the configured retrieval score domain."""
+        if self.min_evidence_score is not None:
+            return self.min_evidence_score
+        if (
+            self.profile == "local"
+            and "embeddinggemma" in self.ollama_embed_model.lower()
+            and self.retrieval_mode == "hybrid"
+            and not self.rerank_enabled
+        ):
+            # RRF score calibrated on the v0.3 golden set. Dense similarity,
+            # sparse and cross-encoder scores are not numerically comparable.
+            # Keep the exact calibrated float: Python's ``5 / 6`` is one ULP
+            # higher and would incorrectly reject candidates on the boundary.
+            return EMBEDDINGGEMMA_HYBRID_MIN_SCORE
+        return 0.0
 
     def validate_ready(self) -> None:
         """Fail fast at startup on configurations that cannot possibly work."""

@@ -1,15 +1,16 @@
 [project]
 name = "reed"
-version = "0.2.0"
+version = "0.3.0"
 description = "Self-hosted RAG service: upload documents, ask questions, get cited answers."
 readme = "README.md"
 requires-python = ">=3.11"
-license = "MIT"
+license = "Apache-2.0"
 authors = [{ name = "José Manuel Cotarelo Linares", email = "delvalle.linares@gmail.com" }]
 keywords = ["rag", "llm", "langchain", "qdrant", "fastapi", "ollama", "vector-search"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Framework :: FastAPI",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -28,6 +29,11 @@ dependencies = [
     "langchain-text-splitters>=1.1,<2",
     "qdrant-client[fastembed]>=1.18",
     "pypdf>=6.14",
+]
+
+[project.optional-dependencies]
+rerank = [
+    "sentence-transformers>=5.1,<6",
 ]
 
 [project.urls]
@@ -69,6 +75,9 @@ include = [
     "/SECURITY.md",
 ]
 
+[tool.hatch.build.targets.sdist.force-include]
+"src/reed/evals/data" = "src/reed/evals/data"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
@@ -102,7 +111,7 @@ warn_unreachable = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["fastembed.*", "qdrant_client.*", "langchain_qdrant.*"]
+module = ["fastembed.*", "qdrant_client.*", "langchain_qdrant.*", "sentence_transformers.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

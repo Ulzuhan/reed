@@ -54,6 +54,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         try:
             await anyio.to_thread.run_sync(_recover_interrupted_state, services)
+            services.start_ingestion_queue()
             services.start_vectorstore_bootstrap()
             await anyio.to_thread.run_sync(
                 services.wait_for_vectorstore_bootstrap,
@@ -105,6 +106,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
                 "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
             )
+        if request.method == "GET" and request.url.path.startswith("/v1/"):
+            response.headers["Cache-Control"] = "no-store"
         return response
 
     app.include_router(health.router)
@@ -117,7 +120,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 def _recover_interrupted_state(services: Services) -> None:
     """Repair durable registry state without touching a model or network."""
     interrupted_records = services.registry.list_by_status(
-        {"pending", "processing", "error", "deleting"}
+        {"pending", "processing", "parsing", "embedding", "indexing", "error", "deleting"}
     )
     for record in interrupted_records:
         services.schedule_vector_cleanup(record.id)

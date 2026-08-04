@@ -124,6 +124,10 @@ body {
   filter: brightness(1.06);
 }
 
+#send:not(:disabled) {
+  cursor: pointer;
+}
+
 .hint {
   margin: 10px 0 0;
   font-size: 12px;

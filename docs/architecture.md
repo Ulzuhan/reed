@@ -1,156 +1,177 @@
 # Architecture
 
-How Reed is put together, and why each piece is the way it is. The [README](../README.md) covers
-what it does; this covers how.
+This document describes Reed v0.3's implementation boundaries. The [README](../README.md) is the
+operator-facing overview and [runbooks](runbooks.md) cover procedures.
 
-## Layout
+## Components
 
-```
+```text
 src/reed/
-├── config.py       Settings — one profile switches the whole provider stack
-├── providers.py    OpenAI · Ollama · fake, behind two langchain-core interfaces
-├── services.py     Lazily built container shared by the API, CLI and evaluator
-├── api/            FastAPI app, routes, SSE framing
-├── ingest/         parsers → chunking → registry → pipeline
-├── rag/            vectorstore → retriever → prompts → chain
-├── evals/          dataset → retrieval metrics → judge → report → runner
-└── static/         The chat UI: three files, no build step
+├── config.py          typed REED_* settings and model-aware presets
+├── providers.py       OpenAI, Ollama and deterministic fake adapters
+├── model_identity.py  immutable digest/revision/quantization resolution
+├── services.py        lazy dependencies, bootstrap, bounded queue and locks
+├── indexes.py         reindex, atomic activation, rollback and cleanup
+├── backups.py         checksummed offline archive lifecycle
+├── observability.py   dependency-free Prometheus registry
+├── api/               FastAPI routes, early middleware and SSE
+├── ingest/            isolated parsing, chunking, staging and publication
+├── rag/               vector store, retrieval, diversity, prompts and generation
+├── evals/             datasets, evidence metrics, judging and reports
+└── static/            build-free chat/upload UI
 ```
 
-Two rules keep this navigable. Nothing outside `providers.py` knows which model vendor is
-configured — everything else sees `BaseChatModel` and `Embeddings`. And nothing outside
-`services.py` constructs anything expensive, so a process that only serves `/health` never opens a
-model client.
+Provider-specific construction stays in `providers.py`; consumers use LangChain core interfaces.
+Expensive dependencies are created lazily by `Services`, so liveness never needs to open a model
+client. The supported deployment is one Reed process: its SQLite registry, queue, semaphores,
+metrics and embedded-store lock are process-local.
 
-## Ingestion
+## Ingestion state machine
 
+```mermaid
+stateDiagram-v2
+    [*] --> queued
+    queued --> parsing
+    parsing --> embedding
+    embedding --> indexing
+    indexing --> ready
+    queued --> error
+    parsing --> error
+    embedding --> error
+    indexing --> error
 ```
-file → sha256 → dedup → parse → chunk → embed (dense + sparse) → upsert → registry: ready
+
+The API writes the original and a durable `queued` registry row before attempting to enqueue its
+document id. A fixed-size `queue.Queue` applies backpressure and worker count is bounded by
+`REED_MAX_CONCURRENT_INGESTIONS`. On startup, durable queued rows are refilled; rows stranded in an
+active stage by a crash become explicit errors. Reed does not claim this protocol across multiple
+processes.
+
+The data path is:
+
+```text
+stream limits → SHA-256/dedup → retained original → isolated parse → sections → chunks
+              → dense and sparse inference → staged upsert → committed payload → registry ready
 ```
 
-**Sections before chunks.** A parser returns *sections*, the smallest unit that still carries a
-citable location: one per page for PDFs, one for the whole file otherwise. Chunking then happens
-inside a section, so a chunk never straddles a page boundary and `handbook.pdf, p. 3` is always
-true.
+Parsers produce citable sections (PDF pages or Markdown headings) before chunking, so a chunk does
+not straddle PDF pages. Chunk sizes are characters because provider tokenizers differ. Dense input
+adds filename/section metadata for retrieval while the stored `page_content` remains clean. Dense
+and sparse inference happens outside the embedded-Qdrant lock; only database operations enter the
+critical section.
 
-**Characters, not tokens.** Chunk sizes are measured in characters. Tokenizers disagree between
-providers, and Reed must chunk identically whether the embeddings come from OpenAI or a local
-Gemma. The cost is slightly uneven token counts per chunk.
+Document and point ids are deterministic from content SHA-256. New points carry
+`metadata.committed=false`; only a complete batch is published. Retrieval additionally requires
+the matching SQLite row to be ready, closing the non-transactional window between Qdrant and
+SQLite. Failed or interrupted attempts schedule document-filtered cleanup before the next search.
 
-**Idempotency comes from content.** The document id is `d-<sha256[:32]>` and each chunk's point id
-is `uuid5(NAMESPACE, "<sha256>:<chunk_index>")`. Re-ingesting the same file overwrites exactly the
-same points. This matters most after a crash: a half-finished ingestion leaves no orphans, because
-the retry writes to the same ids. A document that is `pending` or `processing` counts as a
-duplicate too, so a double-clicked upload cannot start a second run over a file the first one is
-still reading — and deleting one mid-ingestion is refused with `409` rather than racing the
-background task into leaving vectors behind.
+The parser is a spawned process with a wall-clock timeout and, on Linux, CPU, address-space and
+file-descriptor limits. This is risk reduction, not a complete sandbox.
 
-**Publication is two-phase.** Each uploaded vector carries `metadata.committed=false`, so retrieval
-cannot see a partly written remote-Qdrant batch. Once every batch has succeeded, one payload update
-publishes all its point ids. Failures and restart recovery enqueue a document-filtered cleanup, and
-retrieval refuses to run until known partial points have been removed.
+## Index generations
 
-**The registry is sqlite.** Chunks live in Qdrant; per-document bookkeeping — status, error message,
-chunk count, content hash — lives in a single sqlite table in WAL mode. No ORM.
+One logical collection maps to one active physical collection. The registry tracks generations in
+`building`, `active`, `previous` or `failed` state. A fingerprint binds the physical vectors to:
 
-**Concurrency.** Ingestion runs on a worker thread while requests are served, so three things need
-guarding, each with its own lock. The sqlite registry has a connection lock. The lazily built
-dependencies have a construction lock — and the vector store a *separate* one, because probing the
-embedding dimension is a live model call and a cold Ollama would otherwise stall `/health` for as
-long as it takes to load. And every vector operation goes through one more lock, because embedded
-Qdrant has no internal locking at all: concurrent writes corrupt the store outright, which is
-covered by a regression test that fails within a second if the lock is removed. Against a Qdrant
-server that lock is a no-op — the server does its own concurrency control.
+- dense model name, immutable digest/revision, quantization and probed dimension;
+- query/document task prefixes;
+- sparse model;
+- chunk size and overlap; and
+- the fingerprint schema version.
 
-## Storage
+An ordinary startup validates the active physical collection against the configured fingerprint.
+`reed index reindex` instead builds a fresh candidate: it verifies every retained original's hash,
+indexes the complete ready registry, checks exact committed counts, and atomically changes the
+SQLite active pointer. The previous collection is untouched. Candidate failures are recorded and
+their physical collection is deleted. Rollback requires a surviving collection with the exact
+currently configured fingerprint; cleanup never deletes the active generation.
 
-One collection, two named vectors:
+This separates tag mutability from index safety. Ollama tags resolve through `/api/tags` to a
+digest and quantization before a collection is created or validated. Operators can explicitly pin
+identity fields for hosted/custom providers.
 
-| Vector | Source | Purpose |
+## Vector store and retrieval
+
+Each Qdrant collection has two named vectors:
+
+| Vector | Source | Function |
 |---|---|---|
-| `dense` | The configured embedding model | Semantic similarity — finds paraphrases |
-| `sparse` | FastEmbed BM25, with Qdrant computing IDF | Lexical match — finds exact terminology |
+| `dense` | configured embedding model | semantic/paraphrase retrieval |
+| `sparse` | FastEmbed `Qdrant/bm25` | lexical/exact-term retrieval |
 
-The dense size is **probed at startup**, never hardcoded (`text-embedding-3-small` is 1536,
-EmbeddingGemma 768). Collection metadata fingerprints that dimension plus the dense/sparse models,
-task prefixes and chunking setup. Any mismatch fails with an explanation naming the fix. A provider
-that is merely unreachable is treated differently: the server starts, `/health` remains a fast
-liveness probe, `/ready` reports `503`, and it recovers on its own when the model comes back.
-Internal connection details stay in server logs rather than public responses.
+The index always stores both representations. Query views select `dense`, `sparse`, `hybrid` or
+`hybrid_rerank` without rebuilding. Hybrid uses Qdrant Reciprocal Rank Fusion. Retrieval then:
 
-Embedded and server Qdrant use the same client and the same query API, including hybrid search.
-Embedded mode holds a file lock, so a running server and an evaluation cannot share a path — which
-is why evaluations always get a temporary directory.
+1. removes chunks whose documents are not ready;
+2. optionally reranks a larger candidate set through an isolated adapter;
+3. greedily balances relevance and lexical novelty, with a per-document cap;
+4. applies an evidence threshold valid for that score domain; and
+5. fits the final chunks to the prompt's character budget.
 
-## Retrieval
+The automatic threshold `0.8333333333333333` is enabled only for local EmbeddingGemma, hybrid RRF and no
+reranker—the exact v0.3 calibration domain. Dense similarities, sparse scores and cross-encoder
+scores are deliberately not treated as interchangeable.
 
-Both vectors are searched, and Qdrant fuses the two rankings with Reciprocal Rank Fusion
-server-side. Neither the round trip nor the fusion logic lives in Python.
+Embedded and remote Qdrant use the same client/query API. Embedded mode is serialized because its
+in-process structures are not safe for concurrent mutation. Remote Qdrant does its own
+concurrency control. Evaluations always use a temporary embedded path so they cannot collide with
+a running service.
 
-Why hybrid at all: dense retrieval fails on rare exact terms (an internal tool name, an error code,
-a policy label) because the embedding has never seen them meaningfully. Sparse retrieval fails when
-the question shares no vocabulary with the passage. Real questions do both, often in the same
-sentence.
+## Generation and citation contract
 
-Reranking is optional and off by default. When enabled, hybrid search fetches `REED_FETCH_K`
-candidates and a local ONNX cross-encoder rescores them down to `REED_TOP_K`. A cross-encoder reads
-the question and the chunk *together*, which catches passages that merely share vocabulary — at the
-cost of a model download and per-query latency.
+Retrieved excerpts are serialized as untrusted JSON in a user message, never interpolated into the
+system message. The model is instructed to answer only from numbered excerpts, cite every factual
+claim with `[n]`, and refuse when the evidence is absent. Short conversational follow-ups may use
+the most recent user question for retrieval without carrying unrelated topics forward.
 
-## Generation
+The answer path is one async generator shared by SSE, JSON and evaluation:
 
-The system prompt injects retrieved chunks as numbered blocks and states the contract: answer only
-from the excerpts, mark every claim with `[n]`, say plainly when the excerpts do not answer the
-question. Excerpts and filenames are explicitly labelled as untrusted data, and short follow-up
-questions can incorporate the most recent user question into retrieval without polluting unrelated
-new topics.
-
-Those `[n]` numbers are the same ones sent in the `sources` SSE event, which is what makes a
-citation clickable rather than decorative.
-
-Refusal is a feature, not a failure mode. The `negative` questions in the golden set exist to
-measure it, because a model that would rather invent an answer than admit silence is worse than
-useless for document QA.
-
-### The event stream
-
-`answer_stream()` is one async generator yielding typed events, consumed by three callers: the SSE
-endpoint, the non-streaming JSON endpoint, and the evaluation runner. One code path means the
-evaluation measures the same behaviour users get.
-
-```
-SourcesEvent → TokenEvent* → DoneEvent          (or ErrorEvent, at any point)
+```text
+SourcesEvent → TokenEvent* → DoneEvent
+                         ↘ ErrorEvent
 ```
 
-Retrieval is synchronous — the Qdrant client and the ONNX reranker both block — so it runs in a
-worker thread rather than stalling the event loop.
-
-On the wire, a producer task feeds an `asyncio.Queue` while the response generator reads it with a
-timeout. A timeout emits a heartbeat comment and cancels only the queue read, never the producer:
-a slow first token becomes a `: ping` instead of a connection a proxy decides to drop.
+Retrieval and reranking run in worker threads. SSE uses a bounded queue and heartbeat comments;
+stopping the client cancels generation cooperatively. Final citation auditing checks source range,
+sentence coverage, cited numbers and verbatim quotes and exposes warnings to both API and UI.
 
 ## Evaluation
 
-The suite ingests `eval/corpus/` through the real pipeline into a throwaway embedded Qdrant, then
-asks every question in `eval/golden.jsonl` through the real answering code.
+Package data contains the same 10-document corpus, 41-question golden set and exact evidence
+sidecar as the repository-level editable fixtures. The runner ingests through the production
+pipeline into a temporary store, executes the selected production retrieval mode and optionally
+uses the production generation stream.
 
-Ground truth is recorded per document, not per chunk. Chunk boundaries move whenever `chunk_size`
-changes; "the expenses policy answers this" stays true, which keeps the golden set comparable
-across configurations.
+Evidence labels are normalized verbatim excerpts rather than only document names. Retrieval
+reports Recall@k, nDCG@k, MRR, full evidence/multi-hop coverage, negative abstention and abstention
+accuracy. Threshold calibration maximizes balanced positive/negative accuracy. Confidence
+intervals use a deterministic 1,000-draw bootstrap with seed 0.
 
-Retrieval metrics need no chat or judge model, so they run in CI and on a laptop with no keys.
-Judged metrics are one structured-output call each, concurrency-limited, and cached on disk keyed by
-judge configuration plus the exact text judged. Failed calls are neither averaged nor cached, and
-reports expose metric coverage plus configuration, version and dataset-hash provenance. With no
-judge reachable, the run reports retrieval metrics and exits successfully rather than failing.
+Judged metrics use structured outputs, bounded concurrency and an exact-input cache. Failed calls
+are unscored and uncached. Reports include exact chunks/scores/evidence, citations and warnings plus
+dataset hashes, git SHA, package/runtime versions, hardware, configuration and immutable model
+identity. This makes a report a reproducible experiment record rather than a summary row.
 
-## Testing
+## Operations and observability
 
-Everything runs on the `fake` profile: hash-based deterministic embeddings and a scripted chat model
-that emits a cited answer. Integration tests pair those with a **real** embedded Qdrant and **real**
-BM25 sparse vectors, so the named-vector collection, the hybrid query and the deletion filter are
-genuinely exercised — with no API key, no network and no hand-written mocks.
+`/health` remains a cheap liveness probe. `/ready` tracks vector bootstrap and a cached local
+Ollama chat probe without exposing internal endpoints. Provider bootstrap is single-flight with
+bounded exponential backoff. Metrics cover request outcomes, upload rejection, ingestion stages,
+queue depth, retrieval latency and abstentions; authenticated deployments protect `/metrics` with
+the same key.
 
-The container path is covered by a CI job that builds the image, brings the compose stack up and
-drives an upload-then-ask round trip. That job exists because the machine this was developed on has
-no Docker: CI is the test bench, not a rubber stamp.
+Offline backups archive `REED_DATA_DIR` with a manifest and per-file SHA-256. Verification precedes
+restore, and restore uses an adjacent scratch directory plus atomic rename into an empty target.
+Remote Qdrant is outside this archive and needs its own coordinated snapshot.
+
+## Testing and release gates
+
+The fake profile supplies deterministic dense/chat models while integration tests use real
+embedded Qdrant and FastEmbed BM25. Tests cover queue recovery/backpressure, two-phase publication,
+index failure/rollback, citation behavior, unsafe backup members, API/UI behavior and packaging.
+
+CI runs Ruff, strict mypy, Python 3.11–3.13 tests, branch coverage, dependency/history scans,
+Chromium E2E, image scanning and Compose upload-to-answer smoke tests. The release workflow first
+reuses the complete quality gate, verifies that the tag version matches `pyproject.toml` and that
+the tag is the current `origin/main`, builds from the sdist, installs the wheel in an empty
+directory, runs retrieval-only evaluation, and publishes only after those checks pass.

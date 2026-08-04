@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from reed.config import (
     EMBEDDINGGEMMA_DOC_PREFIX,
     EMBEDDINGGEMMA_QUERY_PREFIX,
+    QWEN3_EMBED_QUERY_PREFIX,
     Settings,
 )
 
@@ -42,6 +43,12 @@ def test_prefixes_can_be_disabled_explicitly() -> None:
     assert settings.resolved_doc_prefix == ""
 
 
+def test_qwen3_embedding_gets_its_asymmetric_query_instruction() -> None:
+    settings = make(profile="local", ollama_embed_model="qwen3-embedding:0.6b")
+    assert settings.resolved_query_prefix == QWEN3_EMBED_QUERY_PREFIX
+    assert settings.resolved_doc_prefix == ""
+
+
 def test_openai_embeddings_take_no_prefixes() -> None:
     settings = make(profile="openai", openai_api_key="sk-test")
     assert settings.resolved_query_prefix == ""
@@ -72,6 +79,28 @@ def test_assignment_cannot_bypass_validation() -> None:
 def test_fetch_k_only_applies_when_reranking() -> None:
     assert make(top_k=4, fetch_k=20, rerank_enabled=False).effective_fetch_k == 4
     assert make(top_k=4, fetch_k=20, rerank_enabled=True).effective_fetch_k == 20
+
+
+def test_evidence_threshold_is_calibrated_only_for_its_score_domain() -> None:
+    calibrated = make(profile="local", ollama_embed_model="embeddinggemma", retrieval_mode="hybrid")
+    assert calibrated.resolved_min_evidence_score == pytest.approx(5 / 6)
+    assert make(profile="fake").resolved_min_evidence_score == 0
+    assert (
+        make(
+            profile="local", ollama_embed_model="embeddinggemma", retrieval_mode="dense"
+        ).resolved_min_evidence_score
+        == 0
+    )
+    assert (
+        make(
+            profile="local", ollama_embed_model="embeddinggemma", rerank_enabled=True
+        ).resolved_min_evidence_score
+        == 0
+    )
+    assert (
+        calibrated.model_copy(update={"min_evidence_score": 0.42}).resolved_min_evidence_score
+        == 0.42
+    )
 
 
 def test_paths_derive_from_data_dir(tmp_path: object) -> None:

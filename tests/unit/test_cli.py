@@ -10,6 +10,23 @@ import pytest
 import reed.cli as cli
 from reed.config import Settings
 from reed.ingest.pipeline import IngestResult
+from reed.ingest.registry import IndexGeneration
+
+
+def generation(status: str = "active", *, error: str | None = None) -> IndexGeneration:
+    return IndexGeneration(
+        id=f"{status}-generation-id",
+        logical_collection="test_chunks",
+        physical_collection=f"test_chunks__{status}",
+        fingerprint={"dense_model": "fake-embeddings", "dense_digest": "abc123digest"},
+        status=status,  # type: ignore[arg-type]
+        document_count=2,
+        chunk_count=4,
+        error=error,
+        created_at="2026-08-04T00:00:00+00:00",
+        completed_at="2026-08-04T00:01:00+00:00",
+        activated_at="2026-08-04T00:01:00+00:00",
+    )
 
 
 def test_serve_passes_validated_options_to_uvicorn(
@@ -145,3 +162,89 @@ def test_main_translates_interrupts_and_failures(
     monkeypatch.setattr(cli, "_serve", lambda _args: (_ for _ in ()).throw(RuntimeError("boom")))
     assert cli.main(["serve"]) == 2
     assert "RuntimeError: boom" in capsys.readouterr().err
+
+
+def test_index_cli_reports_lifecycle_operations(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    active = generation()
+    previous = generation("previous")
+    failed = generation("failed", error="RuntimeError: broken candidate")
+    closed = {"count": 0}
+    registry = SimpleNamespace(list_generations=lambda _collection: [active, previous, failed])
+    services = SimpleNamespace(
+        settings=SimpleNamespace(collection="test_chunks"),
+        registry=registry,
+        close=lambda: closed.update(count=closed["count"] + 1),
+    )
+    monkeypatch.setattr("reed.services.build_services", lambda: services)
+    monkeypatch.setattr(
+        "reed.indexes.reindex",
+        lambda _services: SimpleNamespace(generation=active, previous=previous),
+    )
+    monkeypatch.setattr("reed.indexes.rollback", lambda _services: (previous, active))
+
+    def cleanup(_services: object, *, keep: int) -> list[IndexGeneration]:
+        assert keep == 2
+        return [failed]
+
+    monkeypatch.setattr("reed.indexes.cleanup", cleanup)
+
+    for command in ("status", "reindex", "rollback", "cleanup"):
+        arguments = argparse.Namespace(index_command=command, keep=2)
+        assert cli._index(arguments) == 0
+
+    output = capsys.readouterr().out
+    assert "model=fake-embeddings digest=abc123digest" in output
+    assert "error=RuntimeError: broken candidate" in output
+    assert "Previous generation retained" in output
+    assert "retained as previous" in output
+    assert "Removed generation failed-gener" in output
+    assert closed["count"] == 4
+
+
+def test_index_cli_handles_empty_status_and_cleanup(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = SimpleNamespace(list_generations=lambda _collection: [])
+    services = SimpleNamespace(
+        settings=SimpleNamespace(collection="test_chunks"),
+        registry=registry,
+        close=lambda: None,
+    )
+    monkeypatch.setattr("reed.services.build_services", lambda: services)
+
+    def cleanup(_services: object, *, keep: int) -> list[IndexGeneration]:
+        assert keep == 2
+        return []
+
+    monkeypatch.setattr("reed.indexes.cleanup", cleanup)
+
+    assert cli._index(argparse.Namespace(index_command="status", keep=2)) == 0
+    assert cli._index(argparse.Namespace(index_command="cleanup", keep=2)) == 0
+
+    output = capsys.readouterr().out
+    assert "No index generation" in output
+    assert "No old index generations" in output
+
+
+def test_backup_cli_creates_verifies_and_restores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "reed.db").write_bytes(b"registry")
+    archive = tmp_path / "backup.tar.gz"
+    settings = Settings(profile="fake", data_dir=data_dir, _env_file=None)
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+
+    assert cli._backup(argparse.Namespace(backup_command="create", destination=archive)) == 0
+    assert cli._backup(argparse.Namespace(backup_command="verify", archive=archive)) == 0
+    data_dir.rename(tmp_path / "old-data")
+    assert cli._backup(argparse.Namespace(backup_command="restore", archive=archive)) == 0
+
+    output = capsys.readouterr().out
+    assert "Created" in output
+    assert "Verified" in output
+    assert "Restored 1 files" in output
+    assert (data_dir / "reed.db").read_bytes() == b"registry"

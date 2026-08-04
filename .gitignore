@@ -17,6 +17,11 @@ htmlcov/
 data/
 .env
 
+# The installed CLI needs the built-in evaluation fixture even though runtime
+# directories named data/ stay ignored.
+!src/reed/evals/data/
+!src/reed/evals/data/**
+
 # Evaluation artifacts. Named snapshots under eval/results/ are committed;
 # the report each run overwrites, and the judge cache, are not.
 eval/results/report.md

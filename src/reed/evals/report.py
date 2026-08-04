@@ -26,6 +26,14 @@ class QuestionResult:
     latency_ms: int
     judge: JudgeScores = field(default_factory=JudgeScores)
     error: str | None = None
+    expected_evidence: list[str] = field(default_factory=list)
+    covered_evidence: list[str] = field(default_factory=list)
+    recall_at_k: float = 0.0
+    ndcg_at_k: float = 0.0
+    retrieved_chunks: list[dict[str, object]] = field(default_factory=list)
+    abstained: bool = False
+    citation_status: str = "not_checked"
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -39,6 +47,7 @@ class Report:
     rerank: bool
     retrieval: RetrievalMetrics
     results: list[QuestionResult]
+    retrieval_mode: str = "hybrid"
     skipped_reason: str | None = None
     provenance: dict[str, object] = field(default_factory=dict)
 
@@ -91,22 +100,31 @@ class Report:
         return [result for result in self.results if result.error]
 
     def to_markdown(self) -> str:
+        threshold = self.retrieval.recommended_min_score
+        threshold_label = str(threshold) if threshold is not None else "—"
         lines = [
             f"# Evaluation — {self.label}",
             "",
             f"- Profile: `{self.profile}` · chat `{self.chat_model}` "
             f"· embeddings `{self.embed_model}`",
-            f"- Retrieval: hybrid (dense + BM25), top_k={self.top_k}, "
+            f"- Retrieval: {self.retrieval_mode}, top_k={self.top_k}, "
             f"rerank={'on' if self.rerank else 'off'}",
             f"- Judge: {f'`{self.judge_model}`' if self.judge_model else 'not run'}",
             f"- Questions: {len(self.results)} · median latency {self.median_latency_ms} ms",
             "",
             "## Retrieval",
             "",
-            "| hit@1 | hit@k | MRR | all expected docs |",
-            "|---|---|---|---|",
+            "| hit@1 | hit@k | Recall@k | nDCG@k | MRR | all evidence |",
+            "|---|---|---|---|---|---|",
             f"| {_pct(self.retrieval.hit_at_1)} | {_pct(self.retrieval.hit_at_k)} "
+            f"| {_pct(self.retrieval.recall_at_k)} | {self.retrieval.ndcg_at_k:.3f} "
             f"| {self.retrieval.mrr:.3f} | {_pct(self.retrieval.full_coverage)} |",
+            "",
+            f"- Negative abstention: {_pct(self.retrieval.negative_abstention)} "
+            f"({self.retrieval.negative_questions} negatives) · overall abstention accuracy: "
+            f"{_pct(self.retrieval.abstention_accuracy)}",
+            f"- Calibrated score threshold: {threshold_label} "
+            f"(balanced accuracy {_pct(self.retrieval.calibration_balanced_accuracy)})",
             "",
         ]
 
@@ -166,8 +184,8 @@ class Report:
         generation = self.generation
         cells = [
             self.label,
-            _pct(self.retrieval.hit_at_1),
-            _pct(self.retrieval.hit_at_k),
+            _pct(self.retrieval.recall_at_k),
+            f"{self.retrieval.ndcg_at_k:.3f}",
             f"{self.retrieval.mrr:.3f}",
             _pct(generation["faithfulness"]),
             _pct(generation["correctness"]),
@@ -186,6 +204,7 @@ class Report:
                 "judge_model": self.judge_model,
                 "top_k": self.top_k,
                 "rerank": self.rerank,
+                "retrieval_mode": self.retrieval_mode,
                 "retrieval": asdict(self.retrieval),
                 "generation": self.generation,
                 "generation_coverage": self.generation_coverage,
@@ -217,7 +236,7 @@ class Report:
 
 
 SUMMARY_HEADER = (
-    "| Configuration | hit@1 | hit@k | MRR | Faithfulness | Correctness "
+    "| Configuration | Recall@k | nDCG@k | MRR | Faithfulness | Correctness "
     "| Ctx precision | Ctx recall |\n|---|---|---|---|---|---|---|---|"
 )
 
@@ -235,6 +254,7 @@ def build_report(
     results: list[QuestionResult],
     skipped_reason: str | None,
     provenance: dict[str, object] | None = None,
+    retrieval_mode: str = "hybrid",
 ) -> Report:
     from reed.evals.retrieval import aggregate
 
@@ -248,6 +268,7 @@ def build_report(
         rerank=rerank,
         retrieval=aggregate(outcomes),
         results=results,
+        retrieval_mode=retrieval_mode,
         skipped_reason=skipped_reason,
         provenance=provenance or {},
     )
