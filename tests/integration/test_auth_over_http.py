@@ -38,6 +38,13 @@ def test_a_wrong_key_is_rejected_not_crashed(guarded: TestClient) -> None:
     assert guarded.get("/v1/documents").status_code == 401
 
 
+def test_a_latin1_client_is_accepted_too(guarded: TestClient) -> None:
+    # `requests` encodes str headers as latin-1 rather than utf-8; the same
+    # configured key must work from both kinds of client.
+    latin1 = {"X-API-Key": ACCENTED_KEY.encode("latin-1")}
+    assert guarded.get("/v1/documents", headers=latin1).status_code == 200
+
+
 def test_health_is_never_behind_the_key(guarded: TestClient) -> None:
     assert guarded.get("/health").status_code == 200
 
