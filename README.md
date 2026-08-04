@@ -144,8 +144,10 @@ Interactive documentation lives at `/docs`. If `REED_API_KEY` is set, every `/v1
 | `DELETE` | `/v1/documents/{id}` | Remove a document and every chunk it produced |
 | `POST` | `/v1/ask` | Ask a question — SSE stream by default, JSON with `"stream": false` |
 
-Uploading the same content twice returns `409` with the existing document id: ingestion is
-idempotent, keyed on the file's SHA-256.
+Ingestion is idempotent, keyed on the file's SHA-256, so uploading the same content twice returns
+`409` with the existing document id. Deleting a document while it is still being ingested returns
+`409` too — removing it mid-run would leave its chunks behind, retrievable and citable for a
+document the API no longer knows about.
 
 ### Streaming a question
 
@@ -304,7 +306,13 @@ make eval        # the evaluation suite
 ```
 
 Tests run on the `fake` profile: deterministic stub models, real Qdrant, real BM25 sparse vectors.
-No API keys, no network, nothing to mock by hand.
+No API keys, no network, nothing to mock by hand. CI runs the same suite on Python 3.11, 3.12 and
+3.13, then builds the image and drives an upload-then-ask round trip through the compose stack.
+
+A few of them are regression guards written against bugs that were real: concurrent ingestion
+corrupting the embedded store, a heading swallowed by a nested code fence, a document stranded
+`processing` by a restart. Each fails within a second if its fix is reverted, which is the only
+reason to keep a test like that around.
 
 ## Roadmap
 
