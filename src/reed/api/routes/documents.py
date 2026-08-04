@@ -146,7 +146,9 @@ def remove_document(services: ServicesDep, document_id: str) -> Response:
     except DocumentBusyError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except Exception as exc:
-        logger.exception("document deletion failed for %s", document_id)
+        # ``document_id`` comes from the URL. Keeping it out of the log prevents
+        # forged entries through encoded control characters (CWE-117).
+        logger.exception("document deletion failed")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Document deletion could not be completed; retry the operation",

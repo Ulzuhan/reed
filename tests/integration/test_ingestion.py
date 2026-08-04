@@ -278,6 +278,23 @@ def test_deleting_through_the_api(client: TestClient, tmp_path: Path) -> None:
     assert client.delete(f"/v1/documents/{document_id}").status_code == 404
 
 
+def test_deletion_failure_does_not_log_the_user_controlled_id(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def fail_deletion(_services: Services, _document_id: str) -> bool:
+        raise RuntimeError("backend failure")
+
+    monkeypatch.setattr("reed.api.routes.documents.delete_document", fail_deletion)
+
+    response = client.delete("/v1/documents/forged%0Aadmin-entry")
+
+    assert response.status_code == 502
+    assert "forged" not in caplog.text
+    assert "admin-entry" not in caplog.text
+
+
 def test_a_failed_document_can_still_be_deleted(client: TestClient) -> None:
     # Nothing has been ingested, so the collection does not exist yet; deleting
     # used to blow up on the missing collection and strand the row forever.
