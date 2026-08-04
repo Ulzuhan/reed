@@ -5,6 +5,7 @@ from pathlib import Path
 
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 CI_CALL = "uses: ./.github/workflows/ci.yml"
+LATEST_ON_TAGS = "type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}"
 SCOPED_CI_CALL = re.compile(
     re.escape(CI_CALL) + r"\n\s+with:\n\s+concurrency-scope: (\S+)",
 )
@@ -29,6 +30,16 @@ def test_ci_scopes_its_concurrency_group_per_caller() -> None:
     # a called workflow belongs to the caller, and one cancels the other's
     # quality gate seconds after it starts.
     assert "inputs.concurrency-scope" in _group("ci.yml")
+
+
+def test_latest_points_at_the_newest_published_release() -> None:
+    # {{is_default_branch}} is also true for a tag push, so main and tags kept
+    # taking :latest from each other. docker-compose.yml defaults to :latest,
+    # which made an unreleased main build the default deployment.
+    docker = (WORKFLOWS / "docker.yml").read_text(encoding="utf-8")
+
+    assert LATEST_ON_TAGS in docker
+    assert "enable={{is_default_branch}}" not in docker
 
 
 def test_every_ci_caller_passes_a_distinct_scope() -> None:

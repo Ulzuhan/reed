@@ -8,6 +8,9 @@ fixes.
 
 ### Fixed
 
+- Publish the `latest` container tag from release tags only. It was gated on `is_default_branch`,
+  which is also true for a tag push, so `main` and `v*` alternately claimed it; since Compose
+  defaults to `latest`, an unpinned deployment could run an unreleased `main` build.
 - Scope the reusable CI quality gate's concurrency group to its caller. Release and Docker both
   run on a tag push and both call it, so a group built only from the ref made one cancel the
   other's quality gate, and with it the whole run, leaving the versioned container manifest
