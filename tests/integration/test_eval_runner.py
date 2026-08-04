@@ -164,6 +164,39 @@ def test_top_k_override_reaches_retrieval(
     assert all(len(result.retrieved_docs) <= 1 for result in report.results)
 
 
+def test_evaluation_keeps_raw_scores_while_scoring_the_abstention_policy(
+    settings: Settings, corpus: Path, golden: Path, tmp_path: Path
+) -> None:
+    thresholded = settings.model_copy(update={"min_evidence_score": 1.0})
+
+    report = run(thresholded, corpus, golden, tmp_path / "results")
+
+    assert any(result.abstained for result in report.results)
+    assert all(result.retrieved_chunks for result in report.results)
+    assert report.retrieval.recommended_min_score is not None
+    configuration = report.provenance["configuration"]
+    assert isinstance(configuration, dict)
+    assert configuration["resolved_min_evidence_score"] == 1.0
+
+
+@pytest.mark.parametrize("mode", ["dense", "sparse", "hybrid"])
+def test_retrieval_modes_query_the_same_complete_index(
+    settings: Settings, corpus: Path, golden: Path, tmp_path: Path, mode: str
+) -> None:
+    report = run_evaluation(
+        retrieval_only=True,
+        retrieval_mode=mode,  # type: ignore[arg-type]
+        corpus_dir=corpus,
+        golden_path=golden,
+        results_dir=tmp_path / "results",
+        settings=settings,
+    )
+
+    assert report.retrieval_mode == mode
+    assert len(report.results) == 3
+    assert all(result.retrieved_chunks for result in report.results[:2])
+
+
 def test_invalid_top_k_override_is_revalidated(
     settings: Settings, corpus: Path, golden: Path, tmp_path: Path
 ) -> None:

@@ -82,6 +82,17 @@ jobs:
           uv run --python ${{ matrix.python }} pytest
           --cov=reed --cov-branch --cov-report=term-missing:skip-covered
           --cov-fail-under=85
+      - name: Critical-module branch coverage gates
+        if: matrix.python == '3.13'
+        run: |
+          uv run --python ${{ matrix.python }} coverage report --include='src/reed/api/routes/ask.py' --fail-under=75
+          uv run --python ${{ matrix.python }} coverage report --include='src/reed/evals/judge.py' --fail-under=60
+          uv run --python ${{ matrix.python }} coverage report --include='src/reed/evals/runner.py' --fail-under=80
+          uv run --python ${{ matrix.python }} coverage report --include='src/reed/indexes.py' --fail-under=90
+          uv run --python ${{ matrix.python }} coverage report --include='src/reed/ingest/parser_worker.py' --fail-under=55
+          uv run --python ${{ matrix.python }} coverage report --include='src/reed/ingest/pipeline.py' --fail-under=78
+          uv run --python ${{ matrix.python }} coverage report --include='src/reed/ingest/registry.py' --fail-under=90
+          uv run --python ${{ matrix.python }} coverage report --include='src/reed/rag/vectorstore.py' --fail-under=78
 
   browser:
     name: Browser E2E

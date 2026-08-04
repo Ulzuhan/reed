@@ -6,7 +6,17 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-DocumentStatus = Literal["pending", "processing", "ready", "error", "deleting"]
+DocumentStatus = Literal[
+    "pending",
+    "processing",
+    "queued",
+    "parsing",
+    "embedding",
+    "indexing",
+    "ready",
+    "error",
+    "deleting",
+]
 CitationStatus = Literal["valid", "missing", "invalid", "not_applicable"]
 
 MAX_HISTORY_MESSAGES = 6
@@ -20,6 +30,7 @@ class HealthResponse(BaseModel):
     chat_model: str | None = None
     embed_model: str | None = None
     vector_store: str = Field(description="'ok', 'not_checked', or 'unavailable'")
+    chat_provider: str = Field(default="not_checked", description="'ok' or 'unavailable'")
     documents: int | None = Field(default=None, description="Documents in the registry")
 
 

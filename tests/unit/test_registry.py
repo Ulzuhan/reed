@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -22,10 +23,10 @@ def add(registry: DocumentRegistry, doc_id: str = "d-abc", sha: str = "abc123") 
     registry.add(doc_id=doc_id, filename="handbook.md", sha256=sha, size_bytes=42)
 
 
-def test_new_documents_start_pending(registry: DocumentRegistry) -> None:
+def test_new_documents_start_queued(registry: DocumentRegistry) -> None:
     record = registry.add(doc_id="d-abc", filename="a.md", sha256="abc", size_bytes=10)
 
-    assert record.status == "pending"
+    assert record.status == "queued"
     assert record.chunks == 0
     assert record.created_at
 
@@ -34,7 +35,7 @@ def test_status_transitions(registry: DocumentRegistry) -> None:
     add(registry)
 
     registry.mark_processing("d-abc")
-    assert registry.get("d-abc").status == "processing"  # type: ignore[union-attr]
+    assert registry.get("d-abc").status == "parsing"  # type: ignore[union-attr]
 
     registry.mark_ready("d-abc", chunks=12, pages=3)
     ready = registry.get("d-abc")
@@ -56,7 +57,7 @@ def test_errors_are_recorded_and_cleared_on_retry(registry: DocumentRegistry) ->
     )
     assert duplicate is False
     assert retried.id == "d-abc"
-    assert retried.status == "pending"
+    assert retried.status == "queued"
     assert retried.error is None
 
 
@@ -120,3 +121,64 @@ def test_survives_reopening(tmp_path: Path) -> None:
         assert second.count() == 1
     finally:
         second.close()
+
+
+def test_index_generation_activation_and_rollback_are_atomic(registry: DocumentRegistry) -> None:
+    first = registry.create_generation(
+        logical_collection="chunks",
+        physical_collection="chunks__g_1",
+        fingerprint={"digest": "one"},
+        status="active",
+    )
+    second = registry.create_generation(
+        logical_collection="chunks",
+        physical_collection="chunks__g_2",
+        fingerprint={"digest": "two"},
+    )
+    registry.set_generation_counts(second.id, document_count=2, chunk_count=7)
+
+    activated = registry.activate_generation(second.id)
+
+    assert activated.status == "active"
+    assert (activated.document_count, activated.chunk_count) == (2, 7)
+    assert registry.active_generation("chunks").id == second.id  # type: ignore[union-attr]
+    assert registry.previous_generation("chunks").id == first.id  # type: ignore[union-attr]
+    assert [item.status for item in registry.list_generations("chunks")].count("active") == 1
+
+
+def test_failed_generation_cannot_replace_the_active_one(registry: DocumentRegistry) -> None:
+    active = registry.create_generation(
+        logical_collection="chunks",
+        physical_collection="chunks__g_active",
+        fingerprint={},
+        status="active",
+    )
+    candidate = registry.create_generation(
+        logical_collection="chunks",
+        physical_collection="chunks__g_candidate",
+        fingerprint={},
+    )
+
+    assert registry.fail_generation(candidate.id, "provider failed") is True
+    assert registry.active_generation("chunks") == active
+    with pytest.raises(ValueError, match="cannot be activated"):
+        registry.activate_generation(candidate.id)
+
+
+def test_registry_rejects_a_future_schema_before_creating_tables(tmp_path: Path) -> None:
+    path = tmp_path / "future.db"
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA user_version=999")
+    connection.close()
+
+    with pytest.raises(RuntimeError, match="newer"):
+        DocumentRegistry(path)
+
+    check = sqlite3.connect(path)
+    try:
+        tables = check.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='documents'"
+        ).fetchall()
+    finally:
+        check.close()
+    assert tables == []

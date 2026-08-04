@@ -1,36 +1,45 @@
-"""The golden question set.
-
-Ground truth is recorded at document level rather than chunk level. Chunk
-boundaries move whenever the chunk size changes; "this question is answered by
-the expenses policy" stays true.
-"""
+"""Packaged evaluation corpus with an optional checkout-local override."""
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-QuestionType = Literal["factual", "multi_hop", "negative"]
+QuestionType = Literal[
+    "factual",
+    "multi_hop",
+    "negative",
+    "cross_language",
+    "conversation",
+    "adversarial",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceLabel:
+    id: str
+    document: str
+    text: str
 
 
 def _default_eval_dir() -> Path:
-    """Locate ``eval/`` from a checkout, whether Reed runs from src or installed.
+    """Prefer checkout data, falling back to files bundled inside the wheel.
 
-    Prefers the working directory, so `reed eval` works from a clone even when
-    the package itself was pip-installed elsewhere.
+    This keeps local corpus editing convenient without making ``reed eval``
+    depend on the caller's working directory after installation.
     """
     from_cwd = Path.cwd() / "eval"
     if (from_cwd / "golden.jsonl").exists():
         return from_cwd
-    return Path(__file__).resolve().parents[3] / "eval"
+    return Path(__file__).resolve().parent / "data"
 
 
 EVAL_DIR = _default_eval_dir()
 CORPUS_DIR = EVAL_DIR / "corpus"
 GOLDEN_PATH = EVAL_DIR / "golden.jsonl"
-RESULTS_DIR = EVAL_DIR / "results"
+RESULTS_DIR = EVAL_DIR / "results" if EVAL_DIR.name == "eval" else Path.cwd() / "reed-eval-results"
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +49,9 @@ class GoldenQuestion:
     question: str
     reference_answer: str
     expected_docs: list[str]
+    evidence: list[EvidenceLabel] = field(default_factory=list)
+    language: str = "en"
+    tags: list[str] = field(default_factory=list)
 
     @property
     def is_negative(self) -> bool:
@@ -48,18 +60,36 @@ class GoldenQuestion:
 
 
 def load_golden(path: Path | None = None) -> list[GoldenQuestion]:
-    lines = (path or GOLDEN_PATH).read_text(encoding="utf-8").splitlines()
-    return [_parse(line) for line in lines if line.strip()]
+    selected = path or GOLDEN_PATH
+    lines = selected.read_text(encoding="utf-8").splitlines()
+    evidence_path = selected.with_name("evidence.json")
+    evidence_by_question: dict[str, list[dict[str, str]]] = {}
+    if evidence_path.is_file():
+        loaded = json.loads(evidence_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            evidence_by_question = loaded
+    return [_parse(line, evidence_by_question) for line in lines if line.strip()]
 
 
-def _parse(line: str) -> GoldenQuestion:
+def _parse(line: str, evidence_by_question: dict[str, list[dict[str, str]]]) -> GoldenQuestion:
     row = json.loads(line)
+    evidence_rows = row.get("evidence", evidence_by_question.get(str(row["id"]), []))
     return GoldenQuestion(
         id=row["id"],
         type=row["type"],
         question=row["question"],
         reference_answer=row["reference_answer"],
         expected_docs=list(row.get("expected_docs", [])),
+        evidence=[
+            EvidenceLabel(
+                id=str(item["id"]),
+                document=str(item["document"]),
+                text=str(item["text"]),
+            )
+            for item in evidence_rows
+        ],
+        language=str(row.get("language", "en")),
+        tags=[str(tag) for tag in row.get("tags", [])],
     )
 
 

@@ -6,6 +6,9 @@ Security fixes are applied to the current `main` branch and the latest published
 Reed is pre-1.0, so operators should track the latest release rather than expect maintenance of
 older minor versions.
 
+Reed v0.3 is the supported release line. The v0.1.x and v0.2.x tag contents remain MIT-licensed,
+but are not maintained security branches.
+
 ## Reporting a vulnerability
 
 Please do not open a public issue for a suspected vulnerability. Use GitHub's **Report a
@@ -18,7 +21,9 @@ report. Use synthetic data and revoke any credential that may have been exposed.
 
 ## Deployment boundary
 
-Reed processes untrusted document contents, but it is not a multi-tenant authorization system.
+Reed processes untrusted document contents, but it is not a multi-tenant authorization system or
+a distributed service. Run one Reed API process per registry/active index; multiple workers can
+race the SQLite-backed durable queue and are outside the supported security boundary.
 One configured `REED_API_KEY` protects the whole `/v1` API, and anyone holding it can list, query,
 upload, and delete every document in that instance. Put internet-facing deployments behind TLS and
 an authenticated reverse proxy, keep the service bound to loopback by default, and add shared rate
@@ -33,3 +38,8 @@ host or VM.
 Document excerpts are untrusted prompt data. Reed keeps them out of the system message and audits
 citation structure, cited figures, and verbatim quotes. Model output can still be wrong: citations
 are evidence links, not a cryptographic proof of semantic entailment.
+
+Backups contain the original documents, registry metadata and embedded vectors. Create them only
+while Reed is stopped, protect them like the source corpus, verify their checksums before restore,
+and remember that remote Qdrant requires a separate coordinated snapshot. See the
+[operations runbook](docs/runbooks.md).

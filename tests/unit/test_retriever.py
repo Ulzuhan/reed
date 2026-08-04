@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from reed.rag.retriever import SNIPPET_CHARS, RetrievedChunk
+from reed.rag.retriever import SNIPPET_CHARS, RetrievedChunk, diversify
 
 
 def chunk(**kwargs: object) -> RetrievedChunk:
@@ -46,3 +46,15 @@ def test_long_snippets_are_truncated_with_an_ellipsis() -> None:
 
 def test_short_snippets_are_left_alone() -> None:
     assert not chunk(text="short enough").snippet.endswith("…")
+
+
+def test_diversity_limits_one_document_and_prefers_distinct_text() -> None:
+    candidates = [
+        chunk(doc_id="a", filename="a.md", text="same repeated policy", score=1.0),
+        chunk(doc_id="a", filename="a.md", text="same repeated policy", score=0.99),
+        chunk(doc_id="b", filename="b.md", text="different supporting evidence", score=0.8),
+    ]
+
+    selected = diversify(candidates, k=3, lambda_mult=0.7, max_per_document=1)
+
+    assert [item.filename for item in selected] == ["a.md", "b.md"]

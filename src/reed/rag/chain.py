@@ -17,7 +17,12 @@ import anyio.to_thread
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from reed.log import get_logger
-from reed.rag.prompts import build_query_envelope, build_system_prompt, no_context_answer
+from reed.rag.prompts import (
+    build_query_envelope,
+    build_system_prompt,
+    insufficient_evidence_answer,
+    no_context_answer,
+)
 from reed.rag.retriever import RetrievedChunk, retrieve
 
 if TYPE_CHECKING:
@@ -106,7 +111,7 @@ async def answer_stream(
     history = history or []
 
     try:
-        # Retrieval is synchronous (Qdrant client, local ONNX reranker), so it
+        # Retrieval is synchronous (Qdrant client and optional local reranker), so it
         # goes to a worker thread rather than stalling the event loop.
         retrieval_query = build_retrieval_query(question, history)
         chunks = await anyio.to_thread.run_sync(lambda: retrieve(services, retrieval_query, top_k))
@@ -121,7 +126,11 @@ async def answer_stream(
     yield SourcesEvent(chunks=chunks)
 
     if not chunks:
-        empty_answer = no_context_answer(question)
+        empty_answer = (
+            insufficient_evidence_answer(question)
+            if services.registry.count()
+            else no_context_answer(question)
+        )
         yield TokenEvent(text=empty_answer)
         yield DoneEvent(
             answer=empty_answer,

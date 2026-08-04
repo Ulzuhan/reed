@@ -59,6 +59,70 @@ def test_a_stranded_document_can_be_reuploaded_after_a_restart(
     assert response.status_code == 202
 
 
+def test_a_durably_queued_document_resumes_after_restart(
+    settings: Settings, tmp_path: Path
+) -> None:
+    path = tmp_path / "queued.md"
+    path.write_text("# Queued\n\nResume this original.", encoding="utf-8")
+    first = build_services(settings)
+    try:
+        from reed.ingest.pipeline import register_upload
+
+        record, _ = register_upload(first, source=path, filename=path.name)
+        assert record.status == "queued"
+    finally:
+        first.close()
+
+    with TestClient(create_app(settings)) as client:
+        deadline = time.monotonic() + 3
+        status = client.get(f"/v1/documents/{record.id}").json()["status"]
+        while status not in {"ready", "error"} and time.monotonic() < deadline:
+            time.sleep(0.01)
+            status = client.get(f"/v1/documents/{record.id}").json()["status"]
+
+        assert status == "ready"
+
+
+def test_bounded_ingestion_queue_rejects_excess_work(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered = Event()
+    release = Event()
+    original = __import__("reed.ingest.pipeline", fromlist=["parse_file_isolated"])
+    real_parse = original.parse_file_isolated
+
+    def blocked_parse(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        entered.set()
+        release.wait(timeout=3)
+        return real_parse(*args, **kwargs)
+
+    monkeypatch.setattr("reed.ingest.pipeline.parse_file_isolated", blocked_parse)
+    limited = settings.model_copy(
+        update={"max_concurrent_ingestions": 1, "max_queued_ingestions": 1}
+    )
+    try:
+        with TestClient(create_app(limited)) as client:
+            first = client.post(
+                "/v1/documents",
+                files={"file": ("one.md", b"# One\n\nFirst.", "text/markdown")},
+            )
+            assert first.status_code == 202
+            assert entered.wait(timeout=1)
+            second = client.post(
+                "/v1/documents",
+                files={"file": ("two.md", b"# Two\n\nSecond.", "text/markdown")},
+            )
+            assert second.status_code == 202
+            rejected = client.post(
+                "/v1/documents",
+                files={"file": ("three.md", b"# Three\n\nThird.", "text/markdown")},
+            )
+            assert rejected.status_code == 503
+            assert rejected.headers["retry-after"] == "2"
+    finally:
+        release.set()
+
+
 def test_health_notices_a_remote_qdrant_that_dies_after_startup(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:

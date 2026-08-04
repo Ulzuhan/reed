@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, cast
 
@@ -25,7 +26,13 @@ def upload(client: TestClient, tmp_path: Path, name: str = "expenses.md") -> str
     path.write_text(HANDBOOK, encoding="utf-8")
     with path.open("rb") as handle:
         response = client.post("/v1/documents", files={"file": (name, handle, "text/markdown")})
-    return cast(str, response.json()["document_id"])
+    document_id = cast(str, response.json()["document_id"])
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        if client.get(f"/v1/documents/{document_id}").json()["status"] == "ready":
+            return document_id
+        time.sleep(0.01)
+    raise AssertionError(f"document {document_id} did not become ready")
 
 
 def read_events(raw: str) -> list[tuple[str, dict[str, Any]]]:
@@ -90,6 +97,24 @@ def test_done_event_matches_the_streamed_tokens(client: TestClient, tmp_path: Pa
     assert done["citation_status"] == "valid"
 
 
+def test_streaming_failures_are_exposed_in_metrics(client: TestClient, tmp_path: Path) -> None:
+    upload(client, tmp_path)
+
+    class DeadModel:
+        async def astream(self, *_: object, **__: object):  # type: ignore[no-untyped-def]
+            if "__yield__" in __:
+                yield ""
+            raise RuntimeError("provider unavailable")
+
+    services = client.app.state.services  # type: ignore[attr-defined]
+    services._chat = DeadModel()
+    with client.stream("POST", "/v1/ask", json={"question": "expense threshold?"}) as response:
+        events = read_events("".join(response.iter_text()))
+
+    assert any(name == "error" for name, _data in events)
+    assert "reed_ask_errors_total 1" in client.get("/metrics").text
+
+
 def test_non_streaming_mode_returns_one_json_body(client: TestClient, tmp_path: Path) -> None:
     upload(client, tmp_path)
 
@@ -116,7 +141,13 @@ def test_top_k_limits_the_sources(client: TestClient, tmp_path: Path) -> None:
         path = tmp_path / f"doc{index}.md"
         path.write_text(f"# Doc {index}\n\nExpense rule number {index}.", encoding="utf-8")
         with path.open("rb") as handle:
-            client.post("/v1/documents", files={"file": (path.name, handle, "text/markdown")})
+            document_id = client.post(
+                "/v1/documents", files={"file": (path.name, handle, "text/markdown")}
+            ).json()["document_id"]
+        deadline = time.monotonic() + 3
+        while client.get(f"/v1/documents/{document_id}").json()["status"] != "ready":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
 
     response = client.post(
         "/v1/ask", json={"question": "expense rule", "stream": False, "top_k": 2}

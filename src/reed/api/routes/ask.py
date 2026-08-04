@@ -134,6 +134,8 @@ async def _sse_body(services: Services, request: AskRequest) -> AsyncIterator[st
 
                 if item is _STREAM_END:
                     break
+                if isinstance(item, ErrorEvent):
+                    services.metrics.increment("ask_errors_total")
                 yield _render(item)  # type: ignore[arg-type]
         finally:
             producer.cancel()
@@ -152,6 +154,7 @@ async def ask(
     services: ServicesDep,
     request: AskRequest,
 ) -> StreamingResponse | AskResponse:
+    services.metrics.increment("asks_total")
     if request.stream:
         return StreamingResponse(
             _sse_body(services, request),
@@ -167,11 +170,13 @@ async def ask(
         ):
             result = await answer(services, request.question, history, request.top_k)
     except TimeoutError as exc:
+        services.metrics.increment("ask_errors_total")
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="The answer timed out",
         ) from exc
     if result.error:
+        services.metrics.increment("ask_errors_total")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=result.error,

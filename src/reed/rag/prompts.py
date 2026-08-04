@@ -114,5 +114,13 @@ def no_context_answer(question: str) -> str:
     return _NO_CONTEXT_ANSWERS["en"]
 
 
+def insufficient_evidence_answer(question: str) -> str:
+    """Deterministic refusal when documents exist but evidence is too weak."""
+    lowered = question.casefold()
+    if re.search(r"[¿¡]|\b(qué|cómo|cuál|puedo|dónde)\b", lowered):
+        return "No encontré evidencia suficiente en los documentos para responder con seguridad."
+    return "I could not find sufficient evidence in the documents to answer safely."
+
+
 def _one_line(value: str) -> str:
     return " ".join(value.split())
