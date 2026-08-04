@@ -3,9 +3,18 @@ name: CI
 on:
   pull_request:
   workflow_call:
+    inputs:
+      concurrency-scope:
+        description: >-
+          A value unique to the calling workflow. Inside a called workflow the
+          github context belongs to the caller, so Release and Docker — both
+          triggered by the same tag push — would otherwise share one group and
+          cancel each other's quality gate.
+        required: true
+        type: string
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ inputs.concurrency-scope || 'pull-request' }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
