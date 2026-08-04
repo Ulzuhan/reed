@@ -197,7 +197,8 @@ function renderSources(container, sources) {
     const card = el("div", "source");
     card.append(el("span", "source-n", `[${source.n}]`));
 
-    const where = el("div", "source-where", source.filename + (source.page ? `, p. ${source.page}` : ""));
+    // The same label the model saw, so a citation is traceable to its passage.
+    const where = el("div", "source-where", source.location || source.filename);
     where.append(el("span", "source-score", source.score.toFixed(3)));
     card.append(where);
     card.append(el("div", "source-snippet", source.snippet));

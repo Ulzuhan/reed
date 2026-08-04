@@ -7,6 +7,7 @@ fuses the rankings with RRF server-side, so neither phrasing style loses.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -18,6 +19,9 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 SNIPPET_CHARS = 220
+
+# Heading markers, emphasis and list bullets — noise in a one-line preview.
+_MARKDOWN_SYNTAX = re.compile(r"^\s{0,3}#{1,6}\s+|\*{1,3}|`+|^\s*[-*+]\s+", re.MULTILINE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +35,8 @@ class RetrievedChunk:
 
     @property
     def snippet(self) -> str:
-        flat = " ".join(self.text.split())
+        """A preview for humans — the model still receives the raw text."""
+        flat = " ".join(_MARKDOWN_SYNTAX.sub("", self.text).split())
         return flat if len(flat) <= SNIPPET_CHARS else f"{flat[:SNIPPET_CHARS].rstrip()}…"
 
     @property

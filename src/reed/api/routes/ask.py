@@ -44,6 +44,8 @@ def _to_sources(chunks: list[RetrievedChunk]) -> list[Source]:
             doc_id=chunk.doc_id,
             filename=chunk.filename,
             page=chunk.page,
+            section=chunk.section,
+            location=chunk.location,
             score=round(chunk.score, 4),
             snippet=chunk.snippet,
         )

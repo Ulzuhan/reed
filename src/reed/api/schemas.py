@@ -60,6 +60,8 @@ class Source(BaseModel):
     doc_id: str
     filename: str
     page: int | None = None
+    section: str | None = Field(default=None, description="Nearest heading, for Markdown sources")
+    location: str = Field(description="How this passage was labelled in the prompt")
     score: float
     snippet: str
 

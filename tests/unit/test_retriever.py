@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+from reed.rag.retriever import SNIPPET_CHARS, RetrievedChunk
+
+
+def chunk(**kwargs: object) -> RetrievedChunk:
+    defaults: dict[str, object] = {
+        "text": "Expenses above 75 euros require pre-approval.",
+        "score": 0.9,
+        "doc_id": "d-abc",
+        "filename": "expenses.md",
+        "page": None,
+        "section": None,
+    }
+    return RetrievedChunk(**{**defaults, **kwargs})  # type: ignore[arg-type]
+
+
+def test_location_prefers_a_page_number() -> None:
+    assert chunk(page=3, section="Pre-approval").location == "expenses.md, p. 3"
+
+
+def test_location_falls_back_to_the_section() -> None:
+    assert chunk(section="Pre-approval").location == "expenses.md — Pre-approval"
+
+
+def test_location_is_just_the_filename_when_nothing_else_is_known() -> None:
+    assert chunk().location == "expenses.md"
+
+
+def test_snippets_drop_markdown_syntax() -> None:
+    snippet = chunk(text="## Pre-approval\n\nAnything over **75 euros** needs `approval`.").snippet
+
+    assert snippet == "Pre-approval Anything over 75 euros needs approval."
+
+
+def test_snippets_keep_list_content_but_not_bullets() -> None:
+    assert chunk(text="- first\n- second").snippet == "first second"
+
+
+def test_long_snippets_are_truncated_with_an_ellipsis() -> None:
+    snippet = chunk(text="word " * 200).snippet
+
+    assert len(snippet) <= SNIPPET_CHARS + 1
+    assert snippet.endswith("…")
+
+
+def test_short_snippets_are_left_alone() -> None:
+    assert not chunk(text="short enough").snippet.endswith("…")
