@@ -57,6 +57,44 @@ def test_a_stranded_document_can_be_reuploaded_after_a_restart(
     assert response.status_code == 202
 
 
+def test_health_notices_a_remote_qdrant_that_dies_after_startup(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A restarted or partitioned Qdrant container is invisible to a health
+    # check that only remembers what startup found.
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/health").json()["status"] == "ok"
+
+        services = client.app.state.services  # type: ignore[attr-defined]
+        monkeypatch.setattr(services.settings, "qdrant_url", "http://qdrant:6333")
+        monkeypatch.setattr(
+            type(services.qdrant),
+            "get_collections",
+            lambda _: (_ for _ in ()).throw(ConnectionError("connection refused")),
+        )
+
+        body = client.get("/health").json()
+
+    assert body["status"] == "degraded"
+    assert "connection refused" in body["vector_store"]
+
+
+def test_health_does_not_probe_an_embedded_store(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Embedded operations are serialised, so probing here would park /health
+    # behind whatever upload happens to be embedding.
+    with TestClient(create_app(settings)) as client:
+        services = client.app.state.services  # type: ignore[attr-defined]
+        monkeypatch.setattr(
+            type(services.qdrant),
+            "get_collections",
+            lambda _: pytest.fail("/health must not touch the embedded store"),
+        )
+
+        assert client.get("/health").json()["status"] == "ok"
+
+
 def test_health_recovers_once_the_provider_comes_back(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:

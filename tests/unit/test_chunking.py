@@ -115,6 +115,29 @@ def test_a_heading_after_a_code_fence_is_not_lost() -> None:
     assert "Writing the postmortem" in {c.section for c in chunks}
 
 
+def test_a_fence_nested_in_a_longer_fence_does_not_close_it() -> None:
+    # A document that shows a code fence inside a code fence — a style guide, a
+    # README for a docs tool. Treating any run of backticks as a closer made
+    # the outer fence's real terminator look like a new opening, which dropped
+    # every heading after it.
+    document = (
+        "# Style guide\n\n## Fences\n\n"
+        + ("Show fenced blocks with a longer outer fence. " * 20)
+        + "\n\n````markdown\n```bash\nreed serve\n```\n````\n\n"
+        + ("Prose between the two sections so the document splits. " * 20)
+        + "\n\n## Headings\n\nUse ATX headings and sentence case.\n"
+    )
+
+    chunks = split_sections(
+        [RawSection(text=document, page=None)],
+        source_type="md",
+        chunk_size=800,
+        chunk_overlap=100,
+    )
+
+    assert "Headings" in {c.section for c in chunks}
+
+
 def test_an_unterminated_fence_does_not_swallow_later_headings() -> None:
     document = "# Notes\n\n```bash\nreed serve\n\n## Verification\n\nCheck the dashboard.\n"
 

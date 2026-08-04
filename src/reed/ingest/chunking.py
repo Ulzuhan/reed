@@ -56,15 +56,28 @@ def _real_headings(text: str) -> list[str]:
     for line in text.splitlines():
         marker = _FENCE.match(line)
         if marker is not None:
+            delimiter = marker.group(1)
             if fence is None:
-                fence = marker.group(1)[0]  # ` or ~
-            elif marker.group(1).startswith(fence) and not marker.group(2).strip():
+                fence = delimiter
+            elif _closes(delimiter, fence) and not marker.group(2).strip():
                 fence = None
             continue
         if fence is None and (heading := _HEADING.match(line)):
             headings.append(heading.group(2).strip())
 
     return headings
+
+
+def _closes(delimiter: str, opening: str) -> bool:
+    """Whether a fence line closes the block ``opening`` started.
+
+    Length matters: a three-backtick fence nested inside a four-backtick one
+    does not close it. Treating any run of backticks as a closer made the outer
+    fence's real terminator look like a new opening, which swallowed every
+    heading after it — the exact shape of document that shows code fences
+    inside code fences, like this project's own README.
+    """
+    return delimiter[0] == opening[0] and len(delimiter) >= len(opening)
 
 
 def _headings_in(chunk: str, expected: list[str]) -> list[str]:
