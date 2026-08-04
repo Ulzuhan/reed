@@ -56,3 +56,60 @@ jobs:
           key: fastembed-${{ runner.os }}-bm25-v1
       - run: uv sync --group dev
       - run: uv run pytest
+
+  smoke:
+    name: Docker smoke test
+    runs-on: ubuntu-latest
+    needs: test
+    env:
+      REED_PROFILE: fake
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          # Same tag docker-compose.yml refers to, so compose uses this build
+          # instead of pulling or rebuilding.
+          tags: ghcr.io/ulzuhan/reed:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start the stack
+        run: docker compose up -d --wait
+
+      - name: Upload a document and ask about it
+        run: |
+          set -euo pipefail
+          printf '# Expenses\n\nExpenses above 75 euros require pre-approval.\n' > sample.md
+
+          document_id=$(curl -sf -F file=@sample.md http://localhost:8000/v1/documents | jq -r .document_id)
+          echo "uploaded ${document_id}"
+
+          for _ in $(seq 30); do
+            status=$(curl -sf "http://localhost:8000/v1/documents/${document_id}" | jq -r .status)
+            [ "$status" = "ready" ] && break
+            [ "$status" = "error" ] && { curl -s "http://localhost:8000/v1/documents/${document_id}"; exit 1; }
+            sleep 2
+          done
+          [ "$status" = "ready" ] || { echo "ingestion never finished (last status: $status)"; exit 1; }
+
+          answer=$(curl -sf -X POST http://localhost:8000/v1/ask \
+            -H 'content-type: application/json' \
+            -d '{"question":"What is the expense threshold?","stream":false}')
+          echo "$answer" | jq .
+          echo "$answer" | jq -e '.sources | length > 0' > /dev/null
+          echo "$answer" | jq -e '.answer | contains("[1]")' > /dev/null
+
+      - name: Server logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

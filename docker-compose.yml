@@ -1,0 +1,50 @@
+name: reed
+
+services:
+  api:
+    image: ghcr.io/ulzuhan/reed:latest
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      REED_QDRANT_URL: http://qdrant:6333
+      REED_PROFILE: ${REED_PROFILE:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      REED_API_KEY: ${REED_API_KEY:-}
+      # Only used when REED_PROFILE=local; points at the optional ollama service.
+      REED_OLLAMA_BASE_URL: ${REED_OLLAMA_BASE_URL:-http://ollama:11434}
+    volumes:
+      - reed_data:/data
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    healthcheck:
+      # The image ships no curl or wget — bash's /dev/tcp is what is available.
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  # Fully local stack: `docker compose --profile ollama up`
+  # Then pull the models once:
+  #   docker compose exec ollama ollama pull qwen3.5:4b
+  #   docker compose exec ollama ollama pull embeddinggemma
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    volumes:
+      - ollama_models:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  reed_data:
+  qdrant_storage:
+  ollama_models:
