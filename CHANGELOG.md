@@ -6,6 +6,13 @@ fixes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Scope the reusable CI quality gate's concurrency group to its caller. Release and Docker both
+  run on a tag push and both call it, so a group built only from the ref made one cancel the
+  other's quality gate, and with it the whole run, leaving the versioned container manifest
+  unpublished for v0.3.0.
+
 ## [0.3.0] - 2026-08-04
 
 ### Index safety and recovery
