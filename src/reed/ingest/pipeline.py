@@ -65,14 +65,16 @@ def register_upload(
 ) -> tuple[DocumentRecord, bool]:
     """Record a file as pending ingestion.
 
-    Returns the record and whether it is a duplicate of something already
-    ingested successfully.
+    Returns the record and whether it duplicates one Reed already has.
     """
     sha256 = sha256_file(source)
     doc_id = document_id_for(sha256)
 
     existing = services.registry.find_by_sha256(sha256)
-    if existing is not None and existing.status == "ready":
+    # Only a previous failure earns a retry. Re-registering a document that is
+    # mid-ingestion would start a second run and truncate the stored file the
+    # first one is still reading.
+    if existing is not None and existing.status in {"ready", "pending", "processing"}:
         return existing, True
 
     stored_path = source
@@ -133,12 +135,14 @@ def _embed_and_store(services: Services, record: DocumentRecord) -> tuple[int, i
     metadatas = [_metadata_for(record, chunk, kind) for chunk in chunks]
     ids = [point_id_for(record.sha256, chunk.index) for chunk in chunks]
 
-    services.vectorstore.add_texts(
-        texts=texts,
-        metadatas=metadatas,
-        ids=ids,
-        batch_size=UPSERT_BATCH_SIZE,
-    )
+    store = services.vectorstore
+    with services.vector_access:
+        store.add_texts(
+            texts=texts,
+            metadatas=metadatas,
+            ids=ids,
+            batch_size=UPSERT_BATCH_SIZE,
+        )
 
     pages = max((c.page for c in chunks if c.page is not None), default=None)
     return len(chunks), pages
@@ -170,15 +174,32 @@ def ingest_path(services: Services, path: Path) -> IngestResult:
     return process_document(services, record.id)
 
 
+class DocumentBusyError(RuntimeError):
+    """The document is being ingested and cannot be removed yet."""
+
+
 def delete_document(services: Services, doc_id: str) -> bool:
-    """Remove a document's chunks, registry row and stored file."""
+    """Remove a document's chunks, registry row and stored file.
+
+    Refuses while ingestion is in flight: deleting mid-run would let the
+    background task upsert its chunks afterwards, leaving vectors that are
+    retrievable and citable for a document the API says does not exist.
+    """
     from reed.rag.vectorstore import delete_document_points
 
     record = services.registry.get(doc_id)
     if record is None:
         return False
+    if record.status in {"pending", "processing"}:
+        raise DocumentBusyError(
+            f"'{record.filename}' is still being ingested — try again once it is ready"
+        )
 
-    delete_document_points(services.qdrant, services.settings, doc_id)
+    with services.vector_access:
+        # The collection only exists once something has been ingested; a
+        # document that failed to parse may never have created it.
+        if services.qdrant.collection_exists(services.settings.collection):
+            delete_document_points(services.qdrant, services.settings, doc_id)
 
     if record.stored_path:
         Path(record.stored_path).unlink(missing_ok=True)

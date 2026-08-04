@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import anyio.to_thread
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -43,6 +44,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             services.settings.chat_model_name,
             services.settings.embed_model_name,
         )
+        await anyio.to_thread.run_sync(_open_vector_store, services)
         try:
             yield
         finally:
@@ -74,6 +76,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ask.router)
     _mount_ui(app)
     return app
+
+
+def _open_vector_store(services: Services) -> None:
+    """Touch the collection at startup so misconfiguration surfaces here.
+
+    A collection built with a different embedding model can never work, so that
+    fails the boot outright. A provider that is merely unreachable does not:
+    the server keeps serving and `/health` reports it, because the model may
+    well come back without a restart.
+    """
+    from reed.rag.vectorstore import CollectionMismatchError
+
+    try:
+        _ = services.vectorstore
+    except CollectionMismatchError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("vector store not ready at startup: %s", exc)
+        services.startup_error = f"{type(exc).__name__}: {exc}"
 
 
 def _mount_ui(app: FastAPI) -> None:

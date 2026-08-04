@@ -31,7 +31,12 @@ def require_api_key(
     """
     if not settings.api_key:
         return
-    if x_api_key is None or not secrets.compare_digest(x_api_key, settings.api_key):
+    # Compare bytes: compare_digest raises TypeError on non-ASCII str, which
+    # would turn a wrong key into a 500 — and a non-ASCII configured key into a
+    # 500 for everyone.
+    supplied = (x_api_key or "").encode("utf-8")
+    expected = settings.api_key.encode("utf-8")
+    if not x_api_key or not secrets.compare_digest(supplied, expected):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid X-API-Key header",

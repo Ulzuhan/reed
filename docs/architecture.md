@@ -40,11 +40,22 @@ Gemma. The cost is slightly uneven token counts per chunk.
 **Idempotency comes from content.** The document id is `d-<sha256[:12]>` and each chunk's point id
 is `uuid5(NAMESPACE, "<sha256>:<chunk_index>")`. Re-ingesting the same file overwrites exactly the
 same points. This matters most after a crash: a half-finished ingestion leaves no orphans, because
-the retry writes to the same ids.
+the retry writes to the same ids. A document that is `pending` or `processing` counts as a
+duplicate too, so a double-clicked upload cannot start a second run over a file the first one is
+still reading — and deleting one mid-ingestion is refused with `409` rather than racing the
+background task into leaving vectors behind.
 
 **The registry is sqlite.** Chunks live in Qdrant; per-document bookkeeping — status, error message,
-chunk count, content hash — lives in a single sqlite table in WAL mode. No ORM. Ingestion runs in a
-background thread while requests read from another, which is what the connection lock is for.
+chunk count, content hash — lives in a single sqlite table in WAL mode. No ORM.
+
+**Concurrency.** Ingestion runs on a worker thread while requests are served, so three things need
+guarding, each with its own lock. The sqlite registry has a connection lock. The lazily built
+dependencies have a construction lock — and the vector store a *separate* one, because probing the
+embedding dimension is a live model call and a cold Ollama would otherwise stall `/health` for as
+long as it takes to load. And every vector operation goes through one more lock, because embedded
+Qdrant has no internal locking at all: concurrent writes corrupt the store outright, which is
+covered by a regression test that fails within a second if the lock is removed. Against a Qdrant
+server that lock is a no-op — the server does its own concurrency control.
 
 ## Storage
 
@@ -57,8 +68,11 @@ One collection, two named vectors:
 
 The dense size is **probed at startup**, never hardcoded (`text-embedding-3-small` is 1536,
 EmbeddingGemma 768). If the collection already exists with a different size, startup fails with an
-explanation naming the fix. Silently querying a collection built by another model is the kind of
-bug that produces plausible, wrong answers for weeks.
+explanation naming the fix — that configuration can never work, so booting anyway would only defer
+the error to the first question. A provider that is merely unreachable is treated differently: the
+server starts, `/health` reports `degraded` with the reason, and it recovers on its own when the
+model comes back. Silently querying a collection built by another model is the kind of bug that
+produces plausible, wrong answers for weeks.
 
 Embedded and server Qdrant use the same client and the same query API, including hybrid search.
 Embedded mode holds a file lock, so a running server and an evaluation cannot share a path — which

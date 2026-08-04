@@ -24,6 +24,7 @@ class QuestionResult:
     reciprocal_rank: float
     latency_ms: int
     judge: JudgeScores = field(default_factory=JudgeScores)
+    error: str | None = None
 
 
 @dataclass
@@ -58,6 +59,11 @@ class Report:
     def median_latency_ms(self) -> int:
         latencies = sorted(result.latency_ms for result in self.results)
         return latencies[len(latencies) // 2] if latencies else 0
+
+    @property
+    def failures(self) -> list[QuestionResult]:
+        """Questions the provider could not answer at all."""
+        return [result for result in self.results if result.error]
 
     def to_markdown(self) -> str:
         lines = [
@@ -104,6 +110,17 @@ class Report:
                 + " |",
                 "",
             ]
+
+        if self.failures:
+            lines += [
+                "## Unanswered",
+                "",
+                f"**{len(self.failures)} of {len(self.results)} questions failed outright** — "
+                "these are provider errors, not quality scores.",
+                "",
+            ]
+            lines += [f"- `{result.id}`: {result.error}" for result in self.failures]
+            lines += [""]
 
         worst = self._worst_retrievals()
         if worst:

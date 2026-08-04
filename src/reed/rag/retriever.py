@@ -54,7 +54,9 @@ def retrieve(services: Services, query: str, top_k: int | None = None) -> list[R
     k = top_k or settings.top_k
     fetch_k = max(settings.fetch_k, k) if settings.rerank_enabled else k
 
-    hits = services.vectorstore.similarity_search_with_score(query, k=fetch_k)
+    store = services.vectorstore
+    with services.vector_access:
+        hits = store.similarity_search_with_score(query, k=fetch_k)
     chunks = [_to_chunk(document, score) for document, score in hits]
 
     if settings.rerank_enabled and chunks:

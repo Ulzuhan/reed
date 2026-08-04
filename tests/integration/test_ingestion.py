@@ -185,6 +185,44 @@ def test_deleting_through_the_api(client: TestClient, tmp_path: Path) -> None:
     assert client.delete(f"/v1/documents/{document_id}").status_code == 404
 
 
+def test_a_failed_document_can_still_be_deleted(client: TestClient) -> None:
+    # Nothing has been ingested, so the collection does not exist yet; deleting
+    # used to blow up on the missing collection and strand the row forever.
+    response = client.post("/v1/documents", files={"file": ("empty.md", b"   \n", "text/markdown")})
+    document_id = response.json()["document_id"]
+    assert client.get(f"/v1/documents/{document_id}").json()["status"] == "error"
+
+    assert client.delete(f"/v1/documents/{document_id}").status_code == 204
+    assert client.get(f"/v1/documents/{document_id}").status_code == 404
+
+
+def test_a_document_being_ingested_cannot_be_deleted(services: Services, tmp_path: Path) -> None:
+    from reed.ingest.pipeline import DocumentBusyError, delete_document, register_upload
+
+    record, _ = register_upload(services, source=write_handbook(tmp_path), filename="expenses.md")
+    services.registry.mark_processing(record.id)
+
+    with pytest.raises(DocumentBusyError, match="still being ingested"):
+        delete_document(services, record.id)
+
+
+def test_reuploading_a_document_mid_ingestion_is_a_duplicate(
+    services: Services, tmp_path: Path
+) -> None:
+    from reed.ingest.pipeline import register_upload
+
+    path = write_handbook(tmp_path)
+    record, first = register_upload(services, source=path, filename="expenses.md")
+    assert first is False
+    services.registry.mark_processing(record.id)
+
+    # A double-clicked upload must not start a second run over the same file.
+    again, duplicate = register_upload(services, source=path, filename="expenses.md")
+
+    assert duplicate is True
+    assert again.status == "processing"
+
+
 def test_health_counts_documents(client: TestClient, tmp_path: Path) -> None:
     path = write_handbook(tmp_path)
     with path.open("rb") as handle:

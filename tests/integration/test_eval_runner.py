@@ -149,3 +149,25 @@ def test_an_empty_corpus_fails_loudly(settings: Settings, golden: Path, tmp_path
 
     with pytest.raises(FileNotFoundError, match="No corpus documents"):
         run(settings, empty, golden, tmp_path / "results")
+
+
+def test_a_dead_chat_provider_is_reported_not_scored(
+    settings: Settings,
+    corpus: Path,
+    golden: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DeadModel:
+        async def astream(self, *_: object, **__: object):  # type: ignore[no-untyped-def]
+            raise RuntimeError("model 'nope' not found")
+            yield  # pragma: no cover — makes this an async generator
+
+    monkeypatch.setattr("reed.providers.build_chat_model", lambda *_, **__: DeadModel())
+
+    report = run(settings, corpus, golden, tmp_path / "results")
+
+    # Otherwise a broken provider reads as "the model answers badly".
+    assert len(report.failures) == len(report.results)
+    assert "not found" in report.failures[0].error
+    assert "failed outright" in report.to_markdown()

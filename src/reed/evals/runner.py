@@ -189,8 +189,12 @@ async def _evaluate_one(
     answered = await answer_question(services, question.question)
     outcome = score(question, answered.sources)
 
+    if answered.error:
+        # A dead provider would otherwise be recorded as a low quality score.
+        logger.warning("%s failed: %s", question.id, answered.error)
+
     scores = JudgeScores()
-    if judge is not None and skipped_reason is None:
+    if judge is not None and skipped_reason is None and not answered.error:
         scores = await judge.score(
             question,
             answered.text,
@@ -207,5 +211,6 @@ async def _evaluate_one(
         reciprocal_rank=outcome.reciprocal_rank,
         latency_ms=answered.latency_ms,
         judge=scores,
+        error=answered.error,
     )
     return result, outcome

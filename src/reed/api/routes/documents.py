@@ -10,7 +10,12 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from reed.api.deps import ServicesDep, require_api_key
 from reed.api.schemas import DocumentInfo, DocumentList, UploadAccepted
 from reed.ingest.parsers import UnsupportedFileError, source_type
-from reed.ingest.pipeline import delete_document, process_document, register_upload
+from reed.ingest.pipeline import (
+    DocumentBusyError,
+    delete_document,
+    process_document,
+    register_upload,
+)
 from reed.ingest.registry import DocumentRecord
 from reed.log import get_logger
 
@@ -100,6 +105,11 @@ def get_document(services: ServicesDep, document_id: str) -> DocumentInfo:
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_document(services: ServicesDep, document_id: str) -> Response:
-    if not delete_document(services, document_id):
+    try:
+        removed = delete_document(services, document_id)
+    except DocumentBusyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    if not removed:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown document")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -77,6 +77,23 @@ def test_headings_come_from_the_chunk_not_from_a_lookup() -> None:
         assert f"section {number}" in chunk.text.lower()
 
 
+def test_a_comment_in_a_code_fence_is_not_a_heading() -> None:
+    document = (
+        "## Deployment\n\nRun the deploy from your laptop.\n\n"
+        "```bash\n# Rotate the production credentials\nreed rotate --force\n```\n\n"
+        "Afterwards, confirm the release in the dashboard.\n"
+    )
+
+    chunks = split_sections(
+        [RawSection(text=document, page=None)],
+        source_type="md",
+        chunk_size=2000,
+        chunk_overlap=0,
+    )
+
+    assert {c.section for c in chunks} == {"Deployment"}
+
+
 def test_plain_text_has_no_section_labels() -> None:
     chunks = split_sections(
         [RawSection(text="# not a heading here\nplain text", page=None)],

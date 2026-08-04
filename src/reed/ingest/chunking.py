@@ -17,6 +17,10 @@ from reed.ingest.parsers import RawSection
 
 _HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", re.MULTILINE)
 
+# A shell comment inside a fenced block is not a heading, and mislabelling one
+# as a section poisons every chunk that follows it.
+_FENCED_BLOCK = re.compile(r"^\s*(`{3,}|~{3,}).*?(?:^\s*\1\s*$|\Z)", re.MULTILINE | re.DOTALL)
+
 
 @dataclass(frozen=True, slots=True)
 class Chunk:
@@ -42,7 +46,8 @@ def _splitter(
 
 
 def _headings(text: str) -> list[str]:
-    return [match.group(2).strip() for match in _HEADING.finditer(text)]
+    outside_code = _FENCED_BLOCK.sub("", text)
+    return [match.group(2).strip() for match in _HEADING.finditer(outside_code)]
 
 
 def split_sections(

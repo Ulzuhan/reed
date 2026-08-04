@@ -7,6 +7,7 @@ network call and the `fake` profile stays instant.
 from __future__ import annotations
 
 import threading
+from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
 from reed.config import Settings, get_settings
@@ -27,15 +28,24 @@ class Services:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         # Background ingestion runs on worker threads while requests are served,
-        # so two callers can reach an unbuilt dependency at the same moment. The
-        # collection would then be created twice.
+        # so two callers can reach an unbuilt dependency at the same moment.
+        # Separate locks keep a slow model load from blocking /health, which
+        # only needs the registry.
         self._lock = threading.Lock()
+        self._store_lock = threading.Lock()
+        # Embedded Qdrant has no internal locking — concurrent writes corrupt
+        # the store. Every vector operation goes through `store_access()`; with
+        # a Qdrant server, its own concurrency control applies instead.
+        self.vector_access = threading.RLock() if not settings.qdrant_url else nullcontext()
         self._chat: BaseChatModel | None = None
         self._embeddings: Embeddings | None = None
         self._registry: DocumentRegistry | None = None
         self._qdrant: QdrantClient | None = None
         self._vectorstore: QdrantVectorStore | None = None
         self._reranker: TextCrossEncoder | None = None
+        # Set when the vector store could not be opened at startup, so /health
+        # can say so instead of reporting ok for a store that serves nothing.
+        self.startup_error: str | None = None
 
     @property
     def chat(self) -> BaseChatModel:
@@ -50,7 +60,12 @@ class Services:
     @property
     def embeddings(self) -> Embeddings:
         with self._lock:
-            return self._build_embeddings()
+            if self._embeddings is None:
+                from reed.providers import build_embeddings
+
+                self._embeddings = build_embeddings(self.settings)
+                logger.info("embedding model ready: %s", self.settings.embed_model_name)
+            return self._embeddings
 
     @property
     def registry(self) -> DocumentRegistry:
@@ -62,12 +77,21 @@ class Services:
     @property
     def qdrant(self) -> QdrantClient:
         with self._lock:
-            return self._build_qdrant()
+            if self._qdrant is None:
+                from reed.rag.vectorstore import get_qdrant_client
+
+                self._qdrant = get_qdrant_client(self.settings)
+            return self._qdrant
 
     @property
     def vectorstore(self) -> QdrantVectorStore:
-        """The hybrid store, with its collection created and validated."""
-        with self._lock:
+        """The hybrid store, with its collection created and validated.
+
+        Built under its own lock: probing the embedding dimension is a live
+        model call, and a cold Ollama can take tens of seconds. Holding the
+        general lock for that would stall `/health` too.
+        """
+        with self._store_lock:
             if self._vectorstore is None:
                 from reed.providers import embedding_dimension
                 from reed.rag.vectorstore import (
@@ -76,9 +100,10 @@ class Services:
                     ensure_collection,
                 )
 
-                client = self._build_qdrant()
-                embeddings = self._build_embeddings()
-                ensure_collection(client, self.settings, embedding_dimension(embeddings))
+                client = self.qdrant
+                embeddings = self.embeddings
+                with self.vector_access:
+                    ensure_collection(client, self.settings, embedding_dimension(embeddings))
                 self._vectorstore = build_vectorstore(
                     client,
                     self.settings,
@@ -98,25 +123,8 @@ class Services:
                 self._reranker = TextCrossEncoder(model_name=self.settings.rerank_model)
             return self._reranker
 
-    # Unlocked builders, for callers that already hold the lock.
-
-    def _build_embeddings(self) -> Embeddings:
-        if self._embeddings is None:
-            from reed.providers import build_embeddings
-
-            self._embeddings = build_embeddings(self.settings)
-            logger.info("embedding model ready: %s", self.settings.embed_model_name)
-        return self._embeddings
-
-    def _build_qdrant(self) -> QdrantClient:
-        if self._qdrant is None:
-            from reed.rag.vectorstore import get_qdrant_client
-
-            self._qdrant = get_qdrant_client(self.settings)
-        return self._qdrant
-
     def close(self) -> None:
-        with self._lock:
+        with self._store_lock, self._lock:
             if self._registry is not None:
                 self._registry.close()
                 self._registry = None
