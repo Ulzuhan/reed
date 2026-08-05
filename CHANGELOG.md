@@ -6,6 +6,8 @@ fixes.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-05
+
 ### Added
 
 - Replace a document with `PUT /v1/documents/{logical_id}`. The version currently serving stays
