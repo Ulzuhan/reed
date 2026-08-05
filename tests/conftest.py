@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -22,6 +23,20 @@ def settings(tmp_path: Path) -> Settings:
     )
 
 
+def wait_until_ready(client: TestClient, timeout: float = 10.0) -> None:
+    """Poll /ready until the vector store is up.
+
+    Uploads answer 503 with Retry-After until the bootstrap finishes — correct
+    service behaviour, but a test asserting 202 right after startup races the
+    bootstrap on a slow machine unless it waits like a real client would.
+    """
+    deadline = time.monotonic() + timeout
+    while client.get("/ready").status_code != 200:
+        if time.monotonic() > deadline:
+            pytest.fail("vector store never became ready")
+        time.sleep(0.05)
+
+
 @pytest.fixture
 def app(settings: Settings) -> FastAPI:
     return create_app(settings)
@@ -30,4 +45,5 @@ def app(settings: Settings) -> FastAPI:
 @pytest.fixture
 def client(app: FastAPI) -> Iterator[TestClient]:
     with TestClient(app) as test_client:
+        wait_until_ready(test_client)
         yield test_client
