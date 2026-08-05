@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from reed.api.app import create_app
 from reed.config import Settings
 from reed.services import build_services
+from tests.conftest import wait_until_ready
 
 pytestmark = pytest.mark.integration
 
@@ -54,6 +55,7 @@ def test_a_stranded_document_can_be_reuploaded_after_a_restart(
     path = tmp_path / "big.md"
 
     with TestClient(create_app(settings)) as client, path.open("rb") as handle:
+        wait_until_ready(client)
         response = client.post("/v1/documents", files={"file": ("big.md", handle, "text/markdown")})
 
     assert response.status_code == 202
@@ -102,6 +104,7 @@ def test_bounded_ingestion_queue_rejects_excess_work(
     )
     try:
         with TestClient(create_app(limited)) as client:
+            wait_until_ready(client)
             first = client.post(
                 "/v1/documents",
                 files={"file": ("one.md", b"# One\n\nFirst.", "text/markdown")},
