@@ -35,8 +35,10 @@ logger = get_logger(__name__)
 MAX_HISTORY_MESSAGES = 6
 CitationStatus = Literal["valid", "missing", "invalid", "not_applicable"]
 _CITATION = re.compile(r"\[(\d+)\]")
+# Spanish follow-ups routinely open with inverted punctuation ("¿y si…?"),
+# which must not defeat the ^ anchor.
 _FOLLOW_UP = re.compile(
-    r"^(?:and\b|also\b|but\b|what about\b|how about\b|y\b|también\b|pero\b|"
+    r"^[¿¡]?\s*(?:and\b|also\b|but\b|what about\b|how about\b|y\b|también\b|pero\b|"
     r"qué hay de\b|y si\b|et\b|mais\b|und\b|aber\b)",
     re.IGNORECASE,
 )
@@ -126,10 +128,9 @@ async def answer_stream(
     yield SourcesEvent(chunks=chunks)
 
     if not chunks:
+        corpus_size = await anyio.to_thread.run_sync(services.registry.count)
         empty_answer = (
-            insufficient_evidence_answer(question)
-            if services.registry.count()
-            else no_context_answer(question)
+            insufficient_evidence_answer(question) if corpus_size else no_context_answer(question)
         )
         yield TokenEvent(text=empty_answer)
         yield DoneEvent(
@@ -258,9 +259,12 @@ def audit_citations(
             source_text = "\n".join(chunks[index - 1].text for index in cited).casefold()
             plain_claim = _CITATION.sub("", claim)
             numbers = set(re.findall(r"(?<!\w)\d[\d.,/%:-]*(?!\w)", plain_claim))
+            # Straight and curly quotes are matched as distinct pairs, so a
+            # closing quote cannot pair with the next sentence's opening one
+            # and manufacture a "quote" no source contains.
             quotes = {
-                value.strip().casefold()
-                for value in re.findall(r'["“”]([^"“”]{4,})["“”]', plain_claim)
+                (straight or curly).strip().casefold()
+                for straight, curly in re.findall(r'"([^"]{4,})"|“([^”]{4,})”', plain_claim)
             }
             missing_numbers = sorted(
                 number for number in numbers if number.casefold() not in source_text

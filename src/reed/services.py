@@ -75,8 +75,9 @@ class Services:
         self.settings = settings
         # Background ingestion runs on worker threads while requests are served,
         # so two callers can reach an unbuilt dependency at the same moment.
-        # Separate locks keep a slow model load from blocking /health, which
-        # only needs the registry.
+        # Model constructors do no I/O, so chat/embeddings can share _lock with
+        # the registry /health needs; the genuinely slow work — the store's
+        # dimension probe and collection checks — serialises on _store_lock.
         self._lock = threading.Lock()
         self._store_lock = threading.Lock()
         self._reranker_lock = threading.Lock()
@@ -276,7 +277,9 @@ class Services:
             try:
                 from reed.model_identity import ollama_tags
 
-                payload = ollama_tags(self.settings)
+                payload = ollama_tags(
+                    self.settings, timeout=self.settings.readiness_probe_timeout_seconds
+                )
                 rows = payload.get("models")
                 configured = self.settings.ollama_chat_model
                 wanted = {
@@ -414,7 +417,7 @@ class Services:
             return self._reranker
 
     def close(self) -> None:
-        self.stop_ingestion_queue()
+        workers_stopped = self.stop_ingestion_queue()
         with self._bootstrap_lock:
             self._closing = True
             bootstrap = self._bootstrap_thread
@@ -423,6 +426,11 @@ class Services:
             if bootstrap.is_alive():
                 logger.warning("leaving an in-flight provider bootstrap to exit with the process")
                 return
+        if not workers_stopped:
+            # Closing shared handles under a live worker turns its next call
+            # into a crash on a half-closed dependency. The process is exiting
+            # anyway; leave them to exit with it, like the bootstrap above.
+            return
         self._close_dependencies()
 
     @property
@@ -467,13 +475,16 @@ class Services:
             if not self.enqueue_ingestion(doc_id):
                 break
 
-    def stop_ingestion_queue(self) -> None:
+    def stop_ingestion_queue(self) -> bool:
+        """Stop the workers; report whether every one actually exited."""
         self._ingestion_stop.set()
         for worker in self._ingestion_workers:
             worker.join(timeout=1)
-        if any(worker.is_alive() for worker in self._ingestion_workers):
+        stragglers = any(worker.is_alive() for worker in self._ingestion_workers)
+        if stragglers:
             logger.warning("leaving in-flight ingestion workers to exit with the process")
         self._ingestion_workers.clear()
+        return not stragglers
 
     def _run_ingestion_worker(self) -> None:
         from reed.ingest.pipeline import process_document
