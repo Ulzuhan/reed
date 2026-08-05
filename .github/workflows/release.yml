@@ -84,7 +84,7 @@ jobs:
           REED_TAG_VERSION="${GITHUB_REF_NAME#v}"
           REED_WHEEL="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
           test -n "${REED_WHEEL}"
-          uv venv /tmp/reed-release-venv --python 3.13
+          uv venv /tmp/reed-release-venv --python 3.14
           uv pip install --python /tmp/reed-release-venv/bin/python "${REED_WHEEL}"
           test "$(/tmp/reed-release-venv/bin/reed --version)" = "reed ${REED_TAG_VERSION}"
           mkdir /tmp/reed-empty-workdir
