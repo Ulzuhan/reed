@@ -25,6 +25,7 @@ import anyio.to_thread
 from reed.config import Profile, RetrievalMode, Settings, get_settings
 from reed.evals.dataset import (
     CORPUS_DIR,
+    EVAL_DIR,
     GOLDEN_PATH,
     RESULTS_DIR,
     GoldenQuestion,
@@ -497,6 +498,9 @@ def _evidence_result_fields(
 
 
 def _git_sha() -> str:
+    # Anchored to the dataset actually measured, not the process cwd: running
+    # `reed eval` from inside an unrelated repository must not stamp that
+    # repository's commit onto the report as provenance.
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -504,6 +508,7 @@ def _git_sha() -> str:
             capture_output=True,
             text=True,
             timeout=2,
+            cwd=EVAL_DIR.parent,
         )
     except (OSError, subprocess.SubprocessError):
         return "unavailable"

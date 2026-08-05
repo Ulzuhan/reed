@@ -114,6 +114,9 @@ class Settings(BaseSettings):
     readiness_retry_initial_seconds: float = Field(default=2.0, ge=0.05, le=60.0)
     readiness_retry_max_seconds: float = Field(default=60.0, ge=0.05, le=600.0)
     readiness_chat_ttl_seconds: float = Field(default=15.0, ge=0.0, le=300.0)
+    # A readiness probe answers on an orchestrator's budget of seconds; it must
+    # not inherit the minutes-long generation timeout.
+    readiness_probe_timeout_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
     max_output_tokens: int = Field(default=1_024, ge=64, le=8_192)
     max_concurrent_asks: int = Field(default=8, ge=1, le=100)
     max_concurrent_ingestions: int = Field(default=2, ge=1, le=32)

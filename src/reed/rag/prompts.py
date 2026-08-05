@@ -65,6 +65,40 @@ _NO_CONTEXT_ANSWERS = {
     ),
 }
 
+_INSUFFICIENT_EVIDENCE_ANSWERS = {
+    "en": "I could not find sufficient evidence in the documents to answer safely.",
+    "es": "No encontré evidencia suficiente en los documentos para responder con seguridad.",
+    "fr": (
+        "Je n'ai pas trouvé suffisamment d'éléments dans les documents pour répondre avec "
+        "certitude."
+    ),
+    "de": (
+        "Ich habe in den Dokumenten keine ausreichenden Belege gefunden, um sicher zu antworten."
+    ),
+    "pt": "Não encontrei evidências suficientes nos documentos para responder com segurança.",
+    "it": "Non ho trovato prove sufficienti nei documenti per rispondere con sicurezza.",
+}
+
+_LANGUAGE_MARKERS: tuple[tuple[str, set[str]], ...] = (
+    ("es", {"qué", "cómo", "cuál", "cuáles", "puedo", "documento", "documentos", "dónde"}),
+    ("fr", {"quoi", "comment", "quel", "quelle", "documents", "puis", "où"}),
+    ("de", {"was", "wie", "welche", "dokument", "dokumente", "kann", "wo"}),
+    ("pt", {"que", "como", "qual", "documento", "documentos", "posso", "onde"}),
+    ("it", {"cosa", "come", "quale", "documento", "documenti", "posso", "dove"}),
+)
+
+
+def _likely_language(question: str) -> str:
+    """Best-effort guess so deterministic answers match the question language."""
+    lowered = question.casefold()
+    if re.search(r"[¿¡]", lowered):
+        return "es"
+    words = set(re.findall(r"[^\W\d_]+", lowered, flags=re.UNICODE))
+    for language, markers in _LANGUAGE_MARKERS:
+        if words & markers:
+            return language
+    return "en"
+
 
 def build_system_prompt() -> str:
     """Return immutable instructions; untrusted retrieval never enters here."""
@@ -99,27 +133,16 @@ def build_query_envelope(question: str, chunks: list[RetrievedChunk]) -> str:
 
 def no_context_answer(question: str) -> str:
     """Return the deterministic empty-corpus response in a likely language."""
-    lowered = question.casefold()
-    words = set(re.findall(r"[^\W\d_]+", lowered, flags=re.UNICODE))
-    language_markers = (
-        ("es", {"qué", "cómo", "cuál", "cuáles", "puedo", "documento", "documentos", "dónde"}),
-        ("fr", {"quoi", "comment", "quel", "quelle", "documents", "puis", "où"}),
-        ("de", {"was", "wie", "welche", "dokument", "dokumente", "kann", "wo"}),
-        ("pt", {"que", "como", "qual", "documento", "documentos", "posso", "onde"}),
-        ("it", {"cosa", "come", "quale", "documento", "documenti", "posso", "dove"}),
-    )
-    for language, markers in language_markers:
-        if words & markers:
-            return _NO_CONTEXT_ANSWERS[language]
-    return _NO_CONTEXT_ANSWERS["en"]
+    return _NO_CONTEXT_ANSWERS[_likely_language(question)]
 
 
 def insufficient_evidence_answer(question: str) -> str:
-    """Deterministic refusal when documents exist but evidence is too weak."""
-    lowered = question.casefold()
-    if re.search(r"[¿¡]|\b(qué|cómo|cuál|puedo|dónde)\b", lowered):
-        return "No encontré evidencia suficiente en los documentos para responder con seguridad."
-    return "I could not find sufficient evidence in the documents to answer safely."
+    """Deterministic refusal when documents exist but evidence is too weak.
+
+    Same language guess as the empty-corpus answer: the system prompt promises
+    an answer in the question's language, and a refusal is still an answer.
+    """
+    return _INSUFFICIENT_EVIDENCE_ANSWERS[_likely_language(question)]
 
 
 def _one_line(value: str) -> str:
