@@ -36,6 +36,9 @@ class HealthResponse(BaseModel):
 
 class DocumentInfo(BaseModel):
     id: str
+    logical_id: str = Field(default="", description="Identity that survives a replacement")
+    name: str = Field(default="", description="Display name of the lineage")
+    version: int = 1
     filename: str
     status: DocumentStatus
     chunks: int = 0
@@ -54,6 +57,8 @@ class DocumentList(BaseModel):
 
 class UploadAccepted(BaseModel):
     document_id: str
+    logical_id: str = ""
+    version: int = 1
     filename: str
     status: DocumentStatus
 

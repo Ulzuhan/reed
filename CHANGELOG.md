@@ -8,6 +8,12 @@ fixes.
 
 ### Added
 
+- Give every document a logical identity that a future replacement can address: an opaque
+  server-assigned `logical_id`, a display `name` and a `version`, all exposed on the upload
+  response and the document list. A document's `id` is still derived from its content hash, which
+  is precisely why it cannot serve as the identity of something whose content is about to change.
+  Registries from earlier releases migrate in place, each existing document becoming version 1 of
+  its own lineage. Replacement itself follows separately.
 - Ingest `.html` and `.htm`. Scripts, styles and embedded objects are discarded, along with
   anything hidden by an inline style, the `hidden` attribute or `aria-hidden` — text a reader
   cannot see is fully visible to the embedder and to the prompt, which makes an HTML upload a place

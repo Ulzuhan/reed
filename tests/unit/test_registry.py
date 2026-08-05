@@ -54,6 +54,8 @@ def test_errors_are_recorded_and_cleared_on_retry(registry: DocumentRegistry) ->
         filename="handbook.md",
         sha256="abc123",
         size_bytes=42,
+        logical_id="l-retry",
+        name="handbook.md",
     )
     assert duplicate is False
     assert retried.id == "d-abc"
@@ -75,6 +77,8 @@ def test_concurrent_claims_have_exactly_one_winner(registry: DocumentRegistry) -
             filename=f"copy-{index}.md",
             sha256="same-content",
             size_bytes=42,
+            logical_id=f"l-{index}",
+            name=f"copy-{index}.md",
         )
         return duplicate
 
@@ -98,6 +102,8 @@ def test_delete_claim_blocks_a_retry(registry: DocumentRegistry) -> None:
         filename="handbook.md",
         sha256="abc123",
         size_bytes=42,
+        logical_id="l-new",
+        name="handbook.md",
     )
     assert duplicate is True
     assert existing.status == "deleting"
@@ -195,3 +201,51 @@ def test_registry_rejects_a_future_schema_before_creating_tables(tmp_path: Path)
     finally:
         check.close()
     assert tables == []
+
+
+def test_upgrading_gives_every_existing_document_its_own_lineage(tmp_path: Path) -> None:
+    # A registry written before lineages existed: no logical_id, no name, no
+    # version, and the schema version to match.
+    path = tmp_path / "old.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE documents (
+            id TEXT PRIMARY KEY, filename TEXT NOT NULL, sha256 TEXT NOT NULL,
+            status TEXT NOT NULL, chunks INTEGER NOT NULL DEFAULT 0, pages INTEGER,
+            size_bytes INTEGER NOT NULL DEFAULT 0, stored_path TEXT, error TEXT,
+            created_at TEXT NOT NULL
+        );
+        INSERT INTO documents VALUES
+            ('d-one', 'handbook.md', 'aaa', 'ready', 3, NULL, 10, NULL, NULL, '2026-01-01'),
+            ('d-two', 'policy.md', 'bbb', 'ready', 2, NULL, 20, NULL, NULL, '2026-01-02');
+        PRAGMA user_version=2;
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    registry = DocumentRegistry(path)
+    try:
+        one = registry.get("d-one")
+        two = registry.get("d-two")
+        assert one is not None and two is not None
+        assert (one.name, one.version) == ("handbook.md", 1)
+        assert (two.name, two.version) == ("policy.md", 1)
+        # Separate documents, so separate lineages.
+        assert one.logical_id != two.logical_id
+        assert one.logical_id.startswith("l-")
+        assert registry.lineage(one.logical_id) == [one]
+        assert registry.find_by_name("policy.md") == two
+    finally:
+        registry.close()
+
+
+def test_each_upload_starts_its_own_lineage(registry: DocumentRegistry) -> None:
+    first = registry.add(doc_id="d-1", filename="a.md", sha256="aaa", size_bytes=1)
+    second = registry.add(doc_id="d-2", filename="b.md", sha256="bbb", size_bytes=1)
+
+    assert first.logical_id != second.logical_id
+    assert (first.version, second.version) == (1, 1)
+    assert registry.find_by_name("a.md") == first
+    assert registry.find_by_name("missing.md") is None
