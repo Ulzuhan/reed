@@ -1,5 +1,8 @@
 # Evaluation — local, hybrid + rerank, k=4
 
+Historical snapshot, measured on the v0.2-era 30-question golden set; kept for comparison.
+Current results are in [embedding-ab-v0.3.md](embedding-ab-v0.3.md).
+
 - Profile: `local` · chat `qwen3.5:4b` · embeddings `embeddinggemma`
 - Retrieval: hybrid (dense + BM25), top_k=4, rerank=on
 - Judge: `local:qwen3.5:4b`

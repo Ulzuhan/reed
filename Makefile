@@ -39,6 +39,6 @@ eval: ## Run the full evaluation suite (retrieval + LLM judge)
 eval-offline: ## Run retrieval metrics only (no LLM required)
 	uv run reed eval --retrieval-only
 
-clean: ## Remove caches and local runtime data
-	rm -rf .mypy_cache .ruff_cache .pytest_cache
+clean: ## Remove caches, coverage data and build artifacts
+	rm -rf .mypy_cache .ruff_cache .pytest_cache .coverage htmlcov dist
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +

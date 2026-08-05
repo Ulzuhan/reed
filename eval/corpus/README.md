@@ -5,6 +5,6 @@ Every document, person, policy, number and tool name here is invented — nothin
 is drawn from a real organisation.
 
 It exists so Reed's evaluation suite has ground truth to measure against: the
-facts are deliberately specific, consistent across all eight documents, and in
+facts are deliberately specific, consistent across all ten documents, and in
 places deliberately split between two of them, so `../golden.jsonl` can test
 single-document recall and multi-hop retrieval separately.

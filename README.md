@@ -115,14 +115,14 @@ REED_PROFILE=local docker compose up -d --wait
 ```
 
 The image is published for `linux/amd64` and `linux/arm64`. Pin
-`ghcr.io/ulzuhan/reed:0.3.0` or its digest for reproducible deployments. Compose binds the API to
+`ghcr.io/ulzuhan/reed:0.4.0` or its digest for reproducible deployments. Compose binds the API to
 loopback, uses a read-only root filesystem, drops capabilities, enables `no-new-privileges`, and
 sizes `/tmp` to 64 MiB by default. The upload spool and Reed's staged file can coexist briefly, so
 keep `REED_TMPFS_SIZE` above approximately `2 × REED_MAX_UPLOAD_MB` plus multipart overhead.
 
 ## Supported deployment boundary
 
-Reed v0.3 is a **single-node service**. Run one API process against one registry and one active
+Reed is a **single-node service**. Run one API process against one registry and one active
 index. Its queue, rate limits, locks and metrics are per process; multiple Uvicorn workers or
 several Reed replicas are not a supported high-availability topology. Remote Qdrant is supported
 for storage, but does not turn the SQLite registry or ingestion queue into distributed state.
@@ -161,8 +161,8 @@ Qdrant lock, and publishes chunks only after the complete batch commits.
 ## Safe index changes
 
 The collection fingerprint includes dense model name, immutable digest/revision, quantization,
-dimension, task prefixes, sparse model and chunking configuration. A mismatch is rejected instead
-of silently mixing incompatible vectors.
+dimension, task prefixes, sparse model, chunking configuration and the extraction pipeline
+version. A mismatch is rejected instead of silently mixing incompatible vectors.
 
 ```bash
 uv run reed index status
@@ -177,9 +177,10 @@ failed candidate is marked failed and removed while the current generation keeps
 back after a model/configuration change, first restore the exact previous fingerprint; incompatible
 generations are deliberately refused. See [the runbook](docs/runbooks.md).
 
-Existing pre-v0.3 collections can be adopted or rebuilt safely: stop Reed, keep a backup, install
-v0.3 and run `reed index reindex`. Do not delete the old collection before the new generation has
-been activated and verified.
+Upgrading from an earlier release: every index built before v0.4 mismatches the fingerprint on
+upgrade, because the extraction pipeline version is now part of it. Stop Reed, keep a backup,
+install v0.4 and run `reed index reindex`; the previous generation stays available for rollback.
+Do not delete the old collection before the new generation has been activated and verified.
 
 ## Evaluation 2.0
 
@@ -307,8 +308,9 @@ empty directory.
 ## Current limitations
 
 - Single-node only; no distributed ingestion claims or multi-tenant authorization.
-- PDF text extraction only; scanned documents need OCR before upload.
-- PDF, DOCX, HTML, Markdown and plain text only; OCR for scanned documents is not included.
+- PDF, DOCX, HTML, Markdown and plain text only; OCR for scanned documents is not included. A
+  fully scanned PDF is rejected with a clear error. A mostly scanned PDF that still contains a
+  little extractable text — a cover page, headers — ingests only that text, without a warning.
 - DOCX extraction applies tracked changes and ignores comments and footnotes.
 - HTML extraction drops scripts and anything hidden by an inline style, the `hidden`
   attribute or `aria-hidden`. Text hidden by a stylesheet rule is not detected: Reed parses
@@ -317,8 +319,8 @@ empty directory.
   a general content-versioning system: only the current version is searchable, and superseded
   versions are retained rather than pruned on a schedule.
 
-OCR, DOCX/HTML ingestion and document versioning are deliberately deferred to v0.4 rather than
-being partially implemented in this release.
+OCR for scanned documents is deliberately deferred to v0.5 rather than being partially
+implemented in this release.
 
 ## License
 

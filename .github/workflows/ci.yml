@@ -35,6 +35,8 @@ jobs:
         with:
           enable-cache: true
           cache-suffix: lint
+      # The global UV_FROZEN would downgrade --check to a validity-only test.
+      - run: env -u UV_FROZEN uv lock --check
       - run: uv sync --group dev
       - run: uv run ruff check .
       - run: uv run ruff format --check .
