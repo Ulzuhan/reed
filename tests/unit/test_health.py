@@ -58,13 +58,15 @@ def test_local_chat_readiness_is_live_and_cached(
     services = Services(settings)
     monkeypatch.setattr(
         "reed.model_identity.ollama_tags",
-        lambda _settings: {"models": [{"name": "qwen3.5:4b"}]},
+        lambda _settings, *, timeout=None: {"models": [{"name": "qwen3.5:4b"}]},  # noqa: ARG005
     )
     try:
         assert services.probe_chat_readiness() == "ok"
         monkeypatch.setattr(
             "reed.model_identity.ollama_tags",
-            lambda _settings: (_ for _ in ()).throw(ConnectionError("offline")),
+            lambda _settings, *, timeout=None: (  # noqa: ARG005
+                _ for _ in ()
+            ).throw(ConnectionError("offline")),
         )
         assert services.probe_chat_readiness() == "ok"
         services.settings.readiness_chat_ttl_seconds = 0

@@ -120,6 +120,17 @@ def new_logical_id() -> str:
     return f"l-{uuid.uuid4().hex}"
 
 
+class NameConflictError(Exception):
+    """The display name already belongs to a live lineage.
+
+    Carries that lineage's newest record so the caller can point at it.
+    """
+
+    def __init__(self, existing: DocumentRecord) -> None:
+        super().__init__(f"A document named '{existing.name}' already exists")
+        self.existing = existing
+
+
 class DocumentRegistry:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -227,6 +238,19 @@ class DocumentRegistry:
                     self._conn.commit()
                     return _to_record(existing), True
 
+                # The same transaction that claims the hash also claims the
+                # display name; a check in the route would race a concurrent
+                # upload into two lineages sharing one name. A failed lineage
+                # does not hold its name: re-uploading is how a retry works.
+                conflict = self._conn.execute(
+                    "SELECT * FROM documents WHERE name=? AND sha256!=? "
+                    "AND status NOT IN ('superseded', 'error') "
+                    "ORDER BY version DESC LIMIT 1",
+                    (name, sha256),
+                ).fetchone()
+                if conflict is not None:
+                    raise NameConflictError(_to_record(conflict))
+
                 created_at = _now()
                 if existing is not None:
                     # A retry keeps the lineage it already belongs to.
@@ -278,8 +302,8 @@ class DocumentRegistry:
             raise ValueError(f"invalid ingestion stage transition: {current} -> {next}")
         return self._update(
             doc_id,
-            f"UPDATE documents SET status='{next}' WHERE id=? AND status='{current}'",
-            (),
+            "UPDATE documents SET status=? WHERE status=? AND id=?",
+            (next, current),
         )
 
     def mark_ready(self, doc_id: str, *, chunks: int, pages: int | None) -> bool:
@@ -291,9 +315,16 @@ class DocumentRegistry:
         )
 
     def mark_error(self, doc_id: str, message: str) -> bool:
+        """Record a failure — but never demote a version that already serves.
+
+        A ready or superseded row has committed points and a committed history;
+        an error signal arriving late (a failed post-commit cleanup, a crashed
+        worker double-reporting) must not turn either into a dead document.
+        """
         return self._update(
             doc_id,
-            "UPDATE documents SET status='error', error=? WHERE id=?",
+            "UPDATE documents SET status='error', error=? "
+            "WHERE id=? AND status NOT IN ('ready', 'superseded')",
             (message,),
         )
 
