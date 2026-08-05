@@ -191,6 +191,10 @@ class Services:
                 with self.vector_access:
                     active = self.registry.active_generation(self.settings.collection)
                     if active is None:
+                        # No generation registered yet: either a fresh install
+                        # or an upgrade. A collection that already exists must
+                        # match the fingerprint; ensure_collection refuses it
+                        # otherwise and names the reindex as the remedy.
                         collection_name = self.settings.collection
                         ensure_collection(
                             client,
@@ -198,20 +202,12 @@ class Services:
                             dimension,
                             collection_name=collection_name,
                             fingerprint=fingerprint,
-                            allow_legacy=True,
                         )
-                        point_count = int(client.count(collection_name, exact=True).count)
                         active = self.registry.create_generation(
                             logical_collection=self.settings.collection,
                             physical_collection=collection_name,
                             fingerprint=fingerprint,
                             status="active",
-                        )
-                        # A legacy generation already contains the ready corpus.
-                        self.registry.set_generation_counts(
-                            active.id,
-                            document_count=len(self.registry.list_by_status({"ready"})),
-                            chunk_count=point_count,
                         )
                     else:
                         collection_name = active.physical_collection

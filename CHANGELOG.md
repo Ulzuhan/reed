@@ -6,8 +6,21 @@ fixes.
 
 ## [Unreleased]
 
+### Changed
+
+- Record the extraction pipeline version in the collection fingerprint, alongside the model
+  identity and chunking it already covered. A change to a parser, to section splitting, or to how
+  embedding input is composed now changes the fingerprint, so it is detected rather than mixed
+  into an existing index. **Every index built by an earlier release mismatches on upgrade**: run
+  `reed index reindex`, which builds and activates a compatible generation and keeps the current
+  one available for rollback.
+
 ### Fixed
 
+- Refuse a collection whose fingerprint does not match, instead of adopting it. Adoption existed
+  to carry a Reed 0.2 index into 0.3, but 0.2 embedded the raw chunk text while 0.3 embeds a
+  title/section header, so it merged two incompatible kinds of vector into one collection with
+  nothing left able to detect it. The path had no test coverage.
 - Count `reed index status` from the registry and Qdrant instead of printing the counters stored
   when a generation was registered. An index adopted at startup recorded zeros and nothing updated
   them, so the command reported an empty active index for every deployment that had never

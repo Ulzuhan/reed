@@ -57,6 +57,35 @@ def test_same_dimension_but_different_chunking_also_fails_the_boot(
         pass
 
 
+def test_a_collection_from_before_the_extraction_version_is_not_adopted(
+    settings: Settings, tmp_path: Path
+) -> None:
+    # Reed 0.3 stamped collections without an extraction version, and adopting
+    # one was possible. It was also unsound: 0.2 embedded the raw chunk text
+    # and 0.3 embeds a title/section header, so adoption mixed two kinds of
+    # vector in one collection. The door is closed; reindex is the way through.
+    ingest_something(settings, tmp_path)
+
+    services = build_services(settings)
+    try:
+        active = services.registry.active_generation(settings.collection)
+        assert active is not None
+        stored = services.qdrant.get_collection(active.physical_collection).config.metadata or {}
+        older = {key: value for key, value in stored["reed"].items() if key != "extraction"}
+        services.qdrant.update_collection(
+            collection_name=active.physical_collection,
+            metadata={"reed": {**older, "schema": 4}},
+        )
+    finally:
+        services.close()
+
+    with (
+        pytest.raises(CollectionMismatchError, match="extraction"),
+        TestClient(create_app(settings)),
+    ):
+        pass
+
+
 def test_an_unreachable_provider_degrades_instead_of_failing(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:

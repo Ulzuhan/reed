@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from qdrant_client import QdrantClient, models
 
 from reed.config import Settings
+from reed.ingest.extraction import EXTRACTION_VERSION
 from reed.log import get_logger
 from reed.model_identity import ModelIdentity
 
@@ -28,7 +29,7 @@ DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
 DOC_ID_PAYLOAD_KEY = "metadata.doc_id"
 COMMITTED_PAYLOAD_KEY = "metadata.committed"
-COLLECTION_SCHEMA_VERSION = 4
+COLLECTION_SCHEMA_VERSION = 5
 
 
 class CollectionMismatchError(RuntimeError):
@@ -82,7 +83,6 @@ def ensure_collection(
     *,
     collection_name: str | None = None,
     fingerprint: dict[str, object] | None = None,
-    allow_legacy: bool = False,
 ) -> None:
     """Create the collection, or verify the existing one still fits."""
     name = collection_name or settings.collection
@@ -98,11 +98,9 @@ def ensure_collection(
     if client.collection_exists(name):
         _assert_dimension_matches(
             client,
-            settings,
             dimension,
             collection_name=name,
             fingerprint=expected,
-            allow_legacy=allow_legacy,
         )
         _ensure_payload_indexes(client, settings, name)
         return
@@ -127,12 +125,10 @@ def ensure_collection(
 
 def _assert_dimension_matches(
     client: QdrantClient,
-    settings: Settings,
     dimension: int,
     *,
     collection_name: str,
     fingerprint: dict[str, object],
-    allow_legacy: bool,
 ) -> None:
     collection = client.get_collection(collection_name)
     vectors = collection.config.params.vectors
@@ -161,16 +157,15 @@ def _assert_dimension_matches(
 
     metadata = collection.config.metadata or {}
     stored = metadata.get("reed")
-    if stored == fingerprint:
-        return
-    if allow_legacy and stored == _legacy_collection_fingerprint(settings, dimension):
-        client.update_collection(collection_name=collection_name, metadata={"reed": fingerprint})
-        logger.info("adopted legacy collection '%s' into index generations", collection_name)
-        return
     if stored != fingerprint:
+        # Adopting a collection whose fingerprint differs was possible until
+        # v0.4 and was unsound: Reed 0.2 embedded the raw chunk text and Reed
+        # 0.3 embeds a title/section header, so adoption mixed two kinds of
+        # vector in one collection with nothing to detect it afterwards.
         raise _mismatch(
             collection_name,
-            "was built with a different embedding model, prefix, sparse model, or chunking setup",
+            "was built with a different embedding model, prefix, sparse model, chunking setup, "
+            "or extraction pipeline",
         )
 
 
@@ -190,20 +185,8 @@ def collection_fingerprint(
         "sparse_model": settings.sparse_model,
         "chunk_size": settings.chunk_size,
         "chunk_overlap": settings.chunk_overlap,
-    }
-
-
-def _legacy_collection_fingerprint(settings: Settings, dimension: int) -> dict[str, object]:
-    return {
-        "schema": 3,
-        "profile": settings.profile,
-        "dense_model": settings.embed_model_name,
-        "dense_dimension": dimension,
-        "query_prefix": settings.resolved_query_prefix,
-        "document_prefix": settings.resolved_doc_prefix,
-        "sparse_model": settings.sparse_model,
-        "chunk_size": settings.chunk_size,
-        "chunk_overlap": settings.chunk_overlap,
+        # What the vectors were made from, not just which model made them.
+        "extraction": EXTRACTION_VERSION,
     }
 
 
