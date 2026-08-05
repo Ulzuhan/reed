@@ -75,6 +75,7 @@ def register_upload(
     *,
     source: Path,
     filename: str,
+    name: str | None = None,
     copy: bool = True,
 ) -> tuple[DocumentRecord, bool]:
     """Record a file as durably queued for ingestion.
@@ -103,7 +104,7 @@ def register_upload(
         size_bytes=source.stat().st_size,
         stored_path=str(stored_path),
         logical_id=new_logical_id(),
-        name=filename,
+        name=name or filename,
     )
     if duplicate:
         return record, True
@@ -129,6 +130,51 @@ def register_upload(
     refreshed = services.registry.get(record.id)
     assert refreshed is not None
     return refreshed, False
+
+
+def register_replacement(
+    services: Services,
+    *,
+    logical_id: str,
+    source: Path,
+    filename: str,
+) -> DocumentRecord:
+    """Queue new content as the next version of an existing lineage."""
+    sha256 = sha256_file(source)
+    record = services.registry.claim_version(
+        doc_id=document_id_for(sha256),
+        filename=filename,
+        sha256=sha256,
+        size_bytes=source.stat().st_size,
+        stored_path=str(services.settings.uploads_dir / f"{document_id_for(sha256)}__{filename}"),
+        logical_id=logical_id,
+    )
+    services.settings.uploads_dir.mkdir(parents=True, exist_ok=True)
+    claimed = Path(record.stored_path or "")
+    try:
+        shutil.copyfile(source, claimed)
+    except Exception:
+        claimed.unlink(missing_ok=True)
+        services.registry.delete(record.id, expected_status="queued")
+        raise
+    return record
+
+
+def retire_superseded_versions(services: Services, record: DocumentRecord) -> None:
+    """Drop the chunks of versions this one replaces, once it is serving.
+
+    Superseded versions are not indexed at all rather than filtered at query
+    time: the registry join in retrieval already hides them, so keeping their
+    points would cost storage and reindex time to no end.
+    """
+    retired = services.registry.supersede_others(record.logical_id, keep_id=record.id)
+    for previous in retired:
+        services.schedule_vector_cleanup(previous.id)
+        logger.info(
+            "superseded %s v%d in favour of v%d", previous.name, previous.version, record.version
+        )
+    if retired:
+        services.flush_pending_vector_cleanup()
 
 
 def process_document(services: Services, doc_id: str) -> IngestResult:
@@ -196,6 +242,8 @@ def _process_document(services: Services, doc_id: str) -> IngestResult:
             status="error",
             error="Ingestion could not be committed",
         )
+    # Only now, with the new version serving, does the old one stop.
+    retire_superseded_versions(services, record)
     logger.info("ingested %s: %d chunks", record.filename, chunks)
     return IngestResult(document_id=doc_id, status="ready", chunks=chunks)
 
@@ -347,6 +395,20 @@ def ingest_path(services: Services, path: Path) -> IngestResult:
 
 class DocumentBusyError(RuntimeError):
     """The document is being ingested and cannot be removed yet."""
+
+
+def delete_lineage(services: Services, logical_id: str) -> int:
+    """Remove every version of one document. Returns how many were removed."""
+    versions = services.registry.lineage(logical_id)
+    if not versions:
+        return 0
+    removed = 0
+    # Oldest first, so an interruption leaves the current version last standing
+    # rather than a lineage whose only survivors are retired.
+    for record in sorted(versions, key=lambda item: item.version):
+        if delete_document(services, record.id):
+            removed += 1
+    return removed
 
 
 def delete_document(services: Services, doc_id: str) -> bool:

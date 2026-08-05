@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from fastapi import (
     APIRouter,
     Depends,
+    Form,
     HTTPException,
     Query,
     Response,
@@ -22,6 +24,8 @@ from reed.ingest.parsers import UnsupportedFileError, source_type
 from reed.ingest.pipeline import (
     DocumentBusyError,
     delete_document,
+    delete_lineage,
+    register_replacement,
     register_upload,
 )
 from reed.ingest.registry import DocumentRecord
@@ -34,6 +38,9 @@ router = APIRouter(
 )
 
 READ_CHUNK = 1 << 20
+
+# Reed assigns both ids, so the prefix reliably tells a lineage from a version.
+LINEAGE_PREFIX = "l-"
 
 
 def _to_info(record: DocumentRecord) -> DocumentInfo:
@@ -52,18 +59,11 @@ def _to_info(record: DocumentRecord) -> DocumentInfo:
     )
 
 
-@router.post("", response_model=UploadAccepted, status_code=status.HTTP_202_ACCEPTED)
-async def upload_document(
-    services: ServicesDep,
-    file: UploadFile,
-) -> UploadAccepted:
-    if services.ingestion_queue_full:
-        services.metrics.increment("upload_rejections_total")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="The ingestion queue is full; retry after current work completes",
-            headers={"Retry-After": "2"},
-        )
+@contextlib.asynccontextmanager
+async def _staged_upload(
+    services: ServicesDep, file: UploadFile
+) -> AsyncIterator[tuple[Path, str]]:
+    """Spool an upload to a bounded temporary file, always cleaned up."""
     filename = _safe_filename(file.filename or "upload")
     try:
         source_type(Path(filename))
@@ -88,27 +88,65 @@ async def upload_document(
                         detail=f"File exceeds REED_MAX_UPLOAD_MB ({limit_mb} MB)",
                     )
                 staged.write(block)
-
         if written == 0:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Uploaded file is empty",
             )
         assert staged_path is not None
-        record, duplicate = register_upload(services, source=staged_path, filename=filename)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("upload could not be staged or registered")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="The upload could not be registered",
-        ) from exc
+        yield staged_path, filename
     finally:
         if staged_path is not None:
             staged_path.unlink(missing_ok=True)
         with contextlib.suppress(Exception):
             await file.close()
+
+
+@router.post("", response_model=UploadAccepted, status_code=status.HTTP_202_ACCEPTED)
+async def upload_document(
+    services: ServicesDep,
+    file: UploadFile,
+    name: str | None = Form(default=None),
+) -> UploadAccepted:
+    if services.ingestion_queue_full:
+        services.metrics.increment("upload_rejections_total")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The ingestion queue is full; retry after current work completes",
+            headers={"Retry-After": "2"},
+        )
+    async with _staged_upload(services, file) as (staged_path, filename):
+        lineage_name = _safe_filename(name) if name else filename
+        existing = services.registry.find_by_name(lineage_name)
+        # A failed document is not something to replace; re-uploading it is the
+        # documented way to retry, and the registry already allows it.
+        if existing is not None and existing.status != "error":
+            # Not superseded silently: replacing is a PUT, and the caller is
+            # told which lineage to send it to. A genuinely different document
+            # that happens to share a filename can pass its own `name`.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": (
+                        f"A document named '{lineage_name}' already exists. Replace it with "
+                        "PUT /v1/documents/{logical_id}, or upload this one under another name."
+                    ),
+                    "logical_id": existing.logical_id,
+                    "document_id": existing.id,
+                },
+            )
+        try:
+            record, duplicate = register_upload(
+                services, source=staged_path, filename=filename, name=lineage_name
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("upload could not be registered")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="The upload could not be registered",
+            ) from exc
 
     if duplicate:
         raise HTTPException(
@@ -118,6 +156,65 @@ async def upload_document(
                 "document_id": record.id,
             },
         )
+
+    if not services.enqueue_ingestion(record.id):
+        services.metrics.increment("upload_rejections_total")
+        if record.stored_path:
+            Path(record.stored_path).unlink(missing_ok=True)
+        services.registry.delete(record.id, expected_status="queued")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The ingestion queue filled concurrently; retry shortly",
+            headers={"Retry-After": "2"},
+        )
+    services.metrics.increment("uploads_total")
+    return UploadAccepted(
+        document_id=record.id,
+        logical_id=record.logical_id,
+        version=record.version,
+        filename=record.filename,
+        status=record.status,
+    )
+
+
+@router.put("/{logical_id}", response_model=UploadAccepted, status_code=status.HTTP_202_ACCEPTED)
+async def replace_document(
+    services: ServicesDep,
+    logical_id: str,
+    file: UploadFile,
+) -> UploadAccepted:
+    """Publish new content for an existing document.
+
+    The version currently serving stays ready and indexed until the new one is,
+    so a replacement never leaves the document unfindable.
+    """
+    if services.ingestion_queue_full:
+        services.metrics.increment("upload_rejections_total")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The ingestion queue is full; retry after current work completes",
+            headers={"Retry-After": "2"},
+        )
+    if not services.registry.lineage(logical_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown document")
+
+    async with _staged_upload(services, file) as (staged_path, filename):
+        try:
+            record = register_replacement(
+                services, logical_id=logical_id, source=staged_path, filename=filename
+            )
+        except FileExistsError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Unknown document"
+            ) from exc
+        except Exception as exc:
+            logger.exception("replacement could not be registered")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="The replacement could not be registered",
+            ) from exc
 
     if not services.enqueue_ingestion(record.id):
         services.metrics.increment("upload_rejections_total")
@@ -154,6 +251,42 @@ def list_documents(
     )
 
 
+@router.get("/{logical_id}/versions", response_model=DocumentList)
+def list_versions(services: ServicesDep, logical_id: str) -> DocumentList:
+    """Every version of one document, newest first, superseded ones included."""
+    versions = services.registry.lineage(logical_id)
+    if not versions:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown document")
+    return DocumentList(
+        documents=[_to_info(record) for record in versions],
+        total=len(versions),
+        limit=len(versions),
+        offset=0,
+    )
+
+
+@router.delete("/{logical_id}/versions/{version}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_version(services: ServicesDep, logical_id: str, version: int) -> Response:
+    """Forget one superseded version, content and all.
+
+    The serving version is refused: removing it would silently promote nothing,
+    and dropping a document is what deleting the lineage is for. This exists so
+    content that should never have been uploaded can actually be purged.
+    """
+    match = [
+        record for record in services.registry.lineage(logical_id) if record.version == version
+    ]
+    if not match:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown version")
+    if match[0].status != "superseded":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This version is the one in use; delete the document instead",
+        )
+    _delete_or_fail(services, match[0].id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/{document_id}", response_model=DocumentInfo)
 def get_document(services: ServicesDep, document_id: str) -> DocumentInfo:
     record = services.registry.get(document_id)
@@ -164,22 +297,49 @@ def get_document(services: ServicesDep, document_id: str) -> DocumentInfo:
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_document(services: ServicesDep, document_id: str) -> Response:
+    """Delete a document.
+
+    Given a lineage id the whole history goes, which is what "remove this
+    document" means; deleting only the current version would make an older one
+    reappear in search results. Given a version's own id, only that version
+    goes. The two are told apart by the prefix Reed assigns them.
+    """
+    if document_id.startswith(LINEAGE_PREFIX):
+        removed = _lineage_or_fail(services, document_id)
+    else:
+        removed = 1 if _delete_or_fail(services, document_id) else 0
+
+    if not removed:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown document")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _delete_or_fail(services: ServicesDep, document_id: str) -> bool:
     try:
-        removed = delete_document(services, document_id)
+        return delete_document(services, document_id)
     except DocumentBusyError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except Exception as exc:
-        # ``document_id`` comes from the URL. Keeping it out of the log prevents
-        # forged entries through encoded control characters (CWE-117).
+        # The id comes from the URL. Keeping it out of the log prevents forged
+        # entries through encoded control characters (CWE-117).
         logger.exception("document deletion failed")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Document deletion could not be completed; retry the operation",
         ) from exc
 
-    if not removed:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown document")
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+def _lineage_or_fail(services: ServicesDep, logical_id: str) -> int:
+    try:
+        return delete_lineage(services, logical_id)
+    except DocumentBusyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("document lineage deletion failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Document deletion could not be completed; retry the operation",
+        ) from exc
 
 
 def _safe_filename(filename: str) -> str:
