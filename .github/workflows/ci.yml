@@ -227,6 +227,40 @@ jobs:
           echo "$answer" | jq -e '.sources | length > 0' > /dev/null
           echo "$answer" | jq -e '.answer | contains("[1]")' > /dev/null
 
+      # The only place a remote Qdrant is exercised. Reindex, rollback and
+      # backup all talk to it, and the embedded backend's exclusive storage
+      # lock means none of this shape can be reached in the unit suite.
+      - name: Exercise the index and backup lifecycle against remote Qdrant
+        run: |
+          set -euo pipefail
+          # The runbook says to stop the server first, so the supported path is
+          # what gets covered.
+          docker compose stop api
+
+          run() { docker compose run --rm -T api "$@"; }
+          run reed index status
+          run reed index reindex
+          run reed index status | tee /tmp/after-reindex.txt
+          grep -q '^active ' /tmp/after-reindex.txt
+          grep -q '1 ready document' /tmp/after-reindex.txt
+
+          # An archive has to land outside REED_DATA_DIR, and /tmp is tmpfs.
+          run sh -c 'reed backup create /tmp/b.tar.gz && reed backup verify /tmp/b.tar.gz'
+
+          run reed index rollback
+          run reed index cleanup --keep 1
+
+          docker compose up -d --wait api
+
+      - name: Ask again, now that the index has been rebuilt and rolled back
+        run: |
+          set -euo pipefail
+          answer=$(curl -sf -X POST http://localhost:8000/v1/ask \
+            -H 'content-type: application/json' \
+            -d '{"question":"What is the expense threshold?","stream":false}')
+          echo "$answer" | jq -e '.sources | length > 0' > /dev/null
+          echo "$answer" | jq -e '.answer | contains("[1]")' > /dev/null
+
       - name: Server logs on failure
         if: failure()
         run: docker compose logs --no-color

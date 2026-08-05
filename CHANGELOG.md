@@ -50,6 +50,11 @@ fixes.
 
 ### Fixed
 
+- Let `reed backup create` run against a real deployment. FastEmbed's model cache lives inside
+  `REED_DATA_DIR` in the container, because a read-only root filesystem leaves nowhere else
+  persistent, and it is a HuggingFace tree whose snapshots are symlinks into blobs — which the
+  archive refused, so backups failed on the default configuration. Derived caches are skipped;
+  a symlink anywhere else is still refused.
 - Refuse a collection whose fingerprint does not match, instead of adopting it. Adoption existed
   to carry a Reed 0.2 index into 0.3, but 0.2 embedded the raw chunk text while 0.3 embeds a
   title/section header, so it merged two incompatible kinds of vector into one collection with

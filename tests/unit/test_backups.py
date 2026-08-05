@@ -131,3 +131,27 @@ def test_backup_rejects_path_traversal_members(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Unsafe backup path"):
         verify_backup(archive)
+
+
+def test_backup_skips_the_model_cache_but_still_refuses_stray_symlinks(tmp_path: Path) -> None:
+    # The container puts FastEmbed's cache inside REED_DATA_DIR because a
+    # read-only root filesystem leaves nowhere else persistent, and that cache
+    # is a HuggingFace tree whose snapshots are symlinks into blobs.
+    data = tmp_path / "data"
+    (data / "uploads").mkdir(parents=True)
+    (data / "reed.db").write_bytes(b"registry")
+    (data / "uploads" / "policy.md").write_text("policy", encoding="utf-8")
+    cache = data / ".fastembed" / "models--Qdrant--bm25" / "snapshots" / "abc"
+    cache.mkdir(parents=True)
+    (data / ".fastembed" / "blob").write_text("weights", encoding="utf-8")
+    (cache / "arabic.txt").symlink_to(data / ".fastembed" / "blob")
+
+    manifest = create_backup(data, tmp_path / "backup.tar.gz")
+
+    assert sorted(manifest.files) == ["reed.db", "uploads/policy.md"]
+
+    # A symlink anywhere else is still refused: skipping the cache must not
+    # weaken the archive against path escapes.
+    (data / "uploads" / "escape.md").symlink_to(tmp_path / "outside.md")
+    with pytest.raises(ValueError, match="symlink"):
+        create_backup(data, tmp_path / "second.tar.gz")
