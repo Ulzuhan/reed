@@ -171,10 +171,21 @@ def test_index_cli_reports_lifecycle_operations(
     previous = generation("previous")
     failed = generation("failed", error="RuntimeError: broken candidate")
     closed = {"count": 0}
-    registry = SimpleNamespace(list_generations=lambda _collection: [active, previous, failed])
+    registry = SimpleNamespace(
+        list_generations=lambda _collection: [active, previous, failed],
+        list_by_status=lambda _statuses: ["one ready document"],
+    )
+    # The failed generation's collection is gone; the others answer with counts
+    # that deliberately differ from the stale numbers stored on the rows.
+    live = {active.physical_collection: 7, previous.physical_collection: 5}
+    qdrant = SimpleNamespace(
+        collection_exists=lambda name: name in live,
+        count=lambda collection_name, **_kwargs: SimpleNamespace(count=live[collection_name]),
+    )
     services = SimpleNamespace(
         settings=SimpleNamespace(collection="test_chunks"),
         registry=registry,
+        qdrant=qdrant,
         close=lambda: closed.update(count=closed["count"] + 1),
     )
     monkeypatch.setattr("reed.services.build_services", lambda: services)
@@ -196,6 +207,12 @@ def test_index_cli_reports_lifecycle_operations(
 
     output = capsys.readouterr().out
     assert "model=fake-embeddings digest=abc123digest" in output
+    # Counted now, not read from the row, which still claims 4.
+    assert "1 ready document(s) in the registry." in output
+    assert "chunks=7" in output
+    assert "chunks=5" in output
+    assert "chunks=missing" in output
+    assert "chunks=4" not in output
     assert "error=RuntimeError: broken candidate" in output
     assert "Previous generation retained" in output
     assert "retained as previous" in output

@@ -194,7 +194,7 @@ def _eval(args: argparse.Namespace) -> int:
 
 
 def _index(args: argparse.Namespace) -> int:
-    from reed.indexes import cleanup, reindex, rollback
+    from reed.indexes import cleanup, committed_chunk_count, reindex, rollback
     from reed.services import build_services
 
     services = build_services()
@@ -204,13 +204,19 @@ def _index(args: argparse.Namespace) -> int:
             if not generations:
                 print("No index generation has been registered yet.")
                 return 0
+            # Documents belong to the registry, chunks to each collection, and
+            # both are counted now: an active generation showing fewer chunks
+            # than the corpus needs is exactly what this command exists to show.
+            ready = len(services.registry.list_by_status({"ready"}))
+            print(f"{ready} ready document(s) in the registry.")
             for generation in generations:
                 digest = str(generation.fingerprint.get("dense_digest", ""))
                 digest_label = digest[:12] if digest else "unresolved"
+                chunks = committed_chunk_count(services, generation)
                 print(
                     f"{generation.status:8} {generation.id[:12]} "
                     f"collection={generation.physical_collection} "
-                    f"documents={generation.document_count} chunks={generation.chunk_count} "
+                    f"chunks={'missing' if chunks is None else chunks} "
                     f"model={generation.fingerprint.get('dense_model', 'unknown')} "
                     f"digest={digest_label}"
                 )

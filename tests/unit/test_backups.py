@@ -82,6 +82,33 @@ def test_restore_keeps_recorded_permissions_but_drops_setuid(tmp_path: Path) -> 
     assert (restored / "tool").stat().st_mode & 0o7777 == 0o755
 
 
+def test_verify_names_a_corrupt_archive_instead_of_raising_a_lookup_error(
+    tmp_path: Path,
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "reed.db").write_bytes(b"registry" * 200)
+    archive = tmp_path / "backup.tar.gz"
+    create_backup(data, archive)
+    intact = archive.read_bytes()
+
+    # An interrupted copy: the manifest never arrives, and the raw lookup error
+    # for it used to be what an operator saw mid-recovery.
+    archive.write_bytes(intact[: len(intact) // 2])
+    with pytest.raises(ValueError, match="not a readable Reed backup"):
+        verify_backup(archive)
+
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        verify_backup(tmp_path / "absent.tar.gz")
+
+    # Altered content still reports which file failed, which is more useful.
+    altered = bytearray(intact)
+    altered[len(altered) // 2] ^= 0xFF
+    archive.write_bytes(altered)
+    with pytest.raises(ValueError, match=r"Checksum mismatch for reed\.db"):
+        verify_backup(archive)
+
+
 def test_backup_rejects_path_traversal_members(tmp_path: Path) -> None:
     archive = tmp_path / "unsafe.tar.gz"
     with tarfile.open(archive, "w:gz") as output:
