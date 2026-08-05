@@ -8,6 +8,13 @@ fixes.
 
 ### Added
 
+- Ingest `.html` and `.htm`. Scripts, styles and embedded objects are discarded, along with
+  anything hidden by an inline style, the `hidden` attribute or `aria-hidden` — text a reader
+  cannot see is fully visible to the embedder and to the prompt, which makes an HTML upload a place
+  to smuggle instructions past whoever approved the document. Text hidden by a stylesheet rule is
+  not detected, because Reed parses HTML and does not apply CSS; the limit is documented rather
+  than implied. Parsing fetches nothing. Headings become Markdown and tables one line per row, as
+  for DOCX.
 - Ingest `.docx`. Word heading styles become Markdown headings, so section labelling and citations
   work exactly as they do for Markdown, and tables become one line per row with cell pipes escaped.
   Extraction applies tracked changes — insertions in, deletions out. Comments and footnotes are not

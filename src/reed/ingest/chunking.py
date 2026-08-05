@@ -18,9 +18,9 @@ from reed.ingest.parsers import RawSection
 _HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", re.MULTILINE)
 _FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
 
-# Sources whose text carries Markdown headings. The DOCX parser emits Word
-# heading styles as Markdown so section labelling is one implementation.
-_HEADING_AWARE = frozenset({"md", "docx"})
+# Sources whose text carries Markdown headings. The DOCX and HTML parsers emit
+# their headings as Markdown so section labelling is one implementation.
+_HEADING_AWARE = frozenset({"md", "docx", "html"})
 
 
 @dataclass(frozen=True, slots=True)

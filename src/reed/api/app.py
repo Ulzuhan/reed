@@ -26,7 +26,7 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 DESCRIPTION = """
 Ask questions about your own documents and get answers with citations.
 
-Upload PDF, DOCX, Markdown or plain text files, then query them through
+Upload PDF, DOCX, HTML, Markdown or plain text files, then query them through
 `/v1/ask` — with hybrid retrieval (dense + BM25) and token streaming over
 Server-Sent Events. Runs on the OpenAI API or fully offline via Ollama.
 """
