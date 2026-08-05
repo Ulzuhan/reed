@@ -6,6 +6,15 @@ fixes.
 
 ## [Unreleased]
 
+### Added
+
+- Ingest `.docx`. Word heading styles become Markdown headings, so section labelling and citations
+  work exactly as they do for Markdown, and tables become one line per row with cell pipes escaped.
+  Extraction applies tracked changes — insertions in, deletions out. Comments and footnotes are not
+  ingested: a document's suggestions are not what it says. An archive declaring an implausible
+  expansion is refused before anything is decompressed, and a renamed `.doc` is named as such
+  rather than failing obscurely.
+
 ### Changed
 
 - Record the extraction pipeline version in the collection fingerprint, alongside the model

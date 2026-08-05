@@ -18,6 +18,10 @@ from reed.ingest.parsers import RawSection
 _HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", re.MULTILINE)
 _FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
 
+# Sources whose text carries Markdown headings. The DOCX parser emits Word
+# heading styles as Markdown so section labelling is one implementation.
+_HEADING_AWARE = frozenset({"md", "docx"})
+
 
 @dataclass(frozen=True, slots=True)
 class Chunk:
@@ -30,7 +34,7 @@ class Chunk:
 def _splitter(
     source_type: str, chunk_size: int, chunk_overlap: int
 ) -> RecursiveCharacterTextSplitter:
-    if source_type == "md":
+    if source_type in _HEADING_AWARE:
         return RecursiveCharacterTextSplitter.from_language(
             Language.MARKDOWN,
             chunk_size=chunk_size,
@@ -116,7 +120,7 @@ def split_sections(
     chunks: list[Chunk] = []
 
     for section in sections:
-        spans = _real_heading_spans(section.text) if source_type == "md" else []
+        spans = _real_heading_spans(section.text) if source_type in _HEADING_AWARE else []
         headings_by_index = [title for _, title in spans]
         if spans:
             text_to_split, heading_marker = _mark_real_headings(section.text, spans)
