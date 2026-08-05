@@ -62,7 +62,7 @@ jobs:
       fail-fast: false
       matrix:
         # The README claims 3.11+; this is what makes that claim true.
-        python: ["3.11", "3.12", "3.13"]
+        python: ["3.11", "3.12", "3.13", "3.14"]
     env:
       # No API keys in CI: the fake profile exercises every code path with
       # deterministic stand-in models.
@@ -82,19 +82,19 @@ jobs:
         with:
           path: ${{ github.workspace }}/.cache/fastembed
           key: fastembed-${{ runner.os }}-bm25-v1
-      # Explicit --python overrides .python-version, which pins 3.13 for local work.
+      # Explicit --python overrides .python-version, which pins 3.14 for local work.
       - run: uv sync --group dev --python ${{ matrix.python }}
       - name: Test
-        if: matrix.python != '3.13'
+        if: matrix.python != '3.14'
         run: uv run --python ${{ matrix.python }} pytest
       - name: Test with coverage gate
-        if: matrix.python == '3.13'
+        if: matrix.python == '3.14'
         run: >-
           uv run --python ${{ matrix.python }} pytest
           --cov=reed --cov-branch --cov-report=term-missing:skip-covered
           --cov-fail-under=85
       - name: Critical-module branch coverage gates
-        if: matrix.python == '3.13'
+        if: matrix.python == '3.14'
         run: |
           uv run --python ${{ matrix.python }} coverage report --include='src/reed/api/routes/ask.py' --fail-under=75
           uv run --python ${{ matrix.python }} coverage report --include='src/reed/evals/judge.py' --fail-under=60
@@ -122,13 +122,13 @@ jobs:
         with:
           enable-cache: true
           cache-suffix: browser
-          python-version: "3.13"
+          python-version: "3.14"
       - name: Cache FastEmbed models
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.cache/fastembed
           key: fastembed-${{ runner.os }}-bm25-v1
-      - run: uv sync --group dev --group e2e --python 3.13
+      - run: uv sync --group dev --group e2e --python 3.14
       - run: uv run playwright install --with-deps chromium
       - name: Start Reed
         run: |
