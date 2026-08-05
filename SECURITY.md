@@ -6,7 +6,7 @@ Security fixes are applied to the current `main` branch and the latest published
 Reed is pre-1.0, so operators should track the latest release rather than expect maintenance of
 older minor versions.
 
-Reed v0.3 is the supported release line. The v0.1.x and v0.2.x tag contents remain MIT-licensed,
+Reed v0.4 is the supported release line. The v0.1.x and v0.2.x tag contents remain MIT-licensed,
 but are not maintained security branches.
 
 ## Reporting a vulnerability

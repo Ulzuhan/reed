@@ -1,7 +1,7 @@
 # Changelog
 
 All notable changes to Reed are documented here. The project follows Semantic Versioning while it
-is pre-1.0: minor releases may change operational behaviour, and patch releases contain compatible
+is pre-1.0: minor releases may change operational behavior, and patch releases contain compatible
 fixes.
 
 ## [Unreleased]
@@ -187,6 +187,17 @@ fixes.
 - Document operational limits, private vulnerability reporting, secure deployment and all new
   configuration controls.
 
-[Unreleased]: https://github.com/Ulzuhan/reed/compare/v0.3.0...HEAD
+## [0.1.0] - 2026-08-04
+
+First public release: a self-hosted RAG service. Upload PDF, Markdown or text files, ask
+questions, and get streamed answers whose claims carry citations traceable to the retrieved
+passage. Hybrid retrieval (dense embeddings + BM25 fused with Reciprocal Rank Fusion, optional
+local cross-encoder reranking), a fully local profile via Ollama, SSE streaming with sources
+ahead of the first token, a built-in golden-set evaluation suite, and an embedded-Qdrant mode
+that runs without Docker.
+
+[Unreleased]: https://github.com/Ulzuhan/reed/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Ulzuhan/reed/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Ulzuhan/reed/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Ulzuhan/reed/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/Ulzuhan/reed/releases/tag/v0.1.0

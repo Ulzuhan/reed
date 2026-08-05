@@ -1,19 +1,22 @@
 # Architecture
 
-This document describes Reed v0.3's implementation boundaries. The [README](../README.md) is the
+This document describes Reed v0.4's implementation boundaries. The [README](../README.md) is the
 operator-facing overview and [runbooks](runbooks.md) cover procedures.
 
 ## Components
 
 ```text
 src/reed/
+├── cli.py             operator command line: serve, ingest, index, backup, eval
 ├── config.py          typed REED_* settings and model-aware presets
 ├── providers.py       OpenAI, Ollama and deterministic fake adapters
 ├── model_identity.py  immutable digest/revision/quantization resolution
 ├── services.py        lazy dependencies, bootstrap, bounded queue and locks
 ├── indexes.py         reindex, atomic activation, rollback and cleanup
 ├── backups.py         checksummed offline archive lifecycle
+├── rerankers.py       optional reranker backends behind the `rerank` extra
 ├── observability.py   dependency-free Prometheus registry
+├── log.py             logging setup that coexists with uvicorn's handlers
 ├── api/               FastAPI routes, early middleware and SSE
 ├── ingest/            isolated parsing, chunking, staging and publication
 ├── rag/               vector store, retrieval, diversity, prompts and generation
@@ -54,8 +57,8 @@ stream limits → SHA-256/dedup → retained original → isolated parse → sec
               → dense and sparse inference → staged upsert → committed payload → registry ready
 ```
 
-Parsers produce citable sections (PDF pages or Markdown headings) before chunking, so a chunk does
-not straddle PDF pages. Chunk sizes are characters because provider tokenizers differ. Dense input
+Parsers produce citable sections before chunking — PDF pages, or the Markdown headings that
+Markdown, DOCX and HTML extraction emit — so a chunk does not straddle PDF pages. Chunk sizes are characters because provider tokenizers differ. Dense input
 adds filename/section metadata for retrieval while the stored `page_content` remains clean. Dense
 and sparse inference happens outside the embedded-Qdrant lock; only database operations enter the
 critical section.
@@ -76,7 +79,8 @@ One logical collection maps to one active physical collection. The registry trac
 - dense model name, immutable digest/revision, quantization and probed dimension;
 - query/document task prefixes;
 - sparse model;
-- chunk size and overlap; and
+- chunk size and overlap;
+- the extraction pipeline version; and
 - the fingerprint schema version.
 
 An ordinary startup validates the active physical collection against the configured fingerprint.
