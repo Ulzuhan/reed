@@ -214,3 +214,17 @@ def test_overlap_keeps_content_contiguous() -> None:
     joined = " ".join(c.text for c in chunks)
     assert "w0" in joined
     assert "w299" in joined
+
+
+def test_docx_sections_are_labelled_like_markdown() -> None:
+    # The DOCX parser emits Word heading styles as Markdown precisely so that
+    # section labelling stays one implementation rather than two.
+    sections = [
+        RawSection(text="# Expenses\n\nPre-approval above 75 euros.\n\n## Caps\n\nMeals are 40.")
+    ]
+
+    chunks = split_sections(sections, "docx", chunk_size=40, chunk_overlap=0)
+
+    assert {chunk.section for chunk in chunks} == {"Expenses", "Caps"}
+    assert next(c for c in chunks if "75 euros" in c.text).section == "Expenses"
+    assert next(c for c in chunks if "Meals" in c.text).section == "Caps"

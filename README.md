@@ -141,7 +141,7 @@ Interactive API documentation is at `/docs`.
 | `GET` | `/health` | Fast liveness plus cached chat-provider state |
 | `GET` | `/ready` | Vector-store readiness; `503` while unavailable |
 | `GET` | `/metrics` | Prometheus text metrics; API-key protected when auth is enabled |
-| `POST` | `/v1/documents` | Queue a PDF, Markdown or text upload; returns `202` or `503` with `Retry-After` |
+| `POST` | `/v1/documents` | Queue a PDF, DOCX, Markdown or text upload; returns `202` or `503` with `Retry-After` |
 | `GET` | `/v1/documents` | Paginated document list and ingestion stage |
 | `GET` | `/v1/documents/{id}` | One document; poll until `ready` or `error` |
 | `DELETE` | `/v1/documents/{id}` | Delete a ready/error document and its committed chunks |
@@ -305,7 +305,8 @@ empty directory.
 
 - Single-node only; no distributed ingestion claims or multi-tenant authorization.
 - PDF text extraction only; scanned documents need OCR before upload.
-- PDF, Markdown and plain text only; DOCX and HTML are not supported in v0.3.
+- PDF, DOCX, Markdown and plain text only; HTML is not supported yet.
+- DOCX extraction applies tracked changes and ignores comments and footnotes.
 - One logical corpus per Reed instance; document/index version history beyond the retained rollback
   generation is not a content-versioning system.
 

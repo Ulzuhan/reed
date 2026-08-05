@@ -40,7 +40,7 @@ longer than two weeks also need director approval [3]."""
 
 _NO_CONTEXT_ANSWERS = {
     "en": (
-        "I have no documents to answer from yet. Upload a PDF, Markdown or text file first, "
+        "I have no documents to answer from yet. Upload a PDF, DOCX, Markdown or text file first, "
         "then ask again."
     ),
     "es": (
