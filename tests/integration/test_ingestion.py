@@ -410,3 +410,99 @@ def test_health_counts_documents(client: TestClient, tmp_path: Path) -> None:
     assert body["status"] == "ok"
     assert body["vector_store"] == "ok"
     assert body["documents"] == 1
+
+
+def _upload(client: TestClient, tmp_path: Path, name: str, body: str) -> dict[str, object]:
+    path = write_handbook(tmp_path, name, body)
+    with path.open("rb") as handle:
+        response = client.post("/v1/documents", files={"file": (name, handle, "text/markdown")})
+    assert response.status_code == 202, response.text
+    return dict(response.json())
+
+
+def _await_ready(client: TestClient, document_id: str) -> None:
+    deadline = time.monotonic() + 5
+    while client.get(f"/v1/documents/{document_id}").json()["status"] not in {"ready", "error"}:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert client.get(f"/v1/documents/{document_id}").json()["status"] == "ready"
+
+
+def test_a_replacement_supersedes_the_previous_version(client: TestClient, tmp_path: Path) -> None:
+    first = _upload(client, tmp_path, "handbook.md", "# Handbook\n\nThe cap is 75 euros.")
+    _await_ready(client, str(first["document_id"]))
+    logical_id = str(first["logical_id"])
+
+    revised = write_handbook(tmp_path, "handbook-v2.md", "# Handbook\n\nThe cap is 120 euros.")
+    with revised.open("rb") as handle:
+        response = client.put(
+            f"/v1/documents/{logical_id}", files={"file": ("handbook.md", handle, "text/markdown")}
+        )
+
+    assert response.status_code == 202
+    assert response.json()["version"] == 2
+    assert response.json()["logical_id"] == logical_id
+    _await_ready(client, response.json()["document_id"])
+
+    # The list shows one document, at its new version.
+    listing = client.get("/v1/documents").json()
+    assert listing["total"] == 1
+    current = listing["documents"][0]
+    assert (current["version"], current["name"]) == (2, "handbook.md")
+
+    # The history is still there, and the retired version is no longer serving.
+    versions = client.get(f"/v1/documents/{logical_id}/versions").json()
+    assert [(v["version"], v["status"]) for v in versions["documents"]] == [
+        (2, "ready"),
+        (1, "superseded"),
+    ]
+
+    answer = client.post("/v1/ask", json={"question": "What is the cap?", "stream": False}).json()
+    assert "120" in " ".join(source["excerpt"] for source in answer["sources"])
+    assert "75 euros" not in " ".join(source["excerpt"] for source in answer["sources"])
+
+
+def test_a_second_upload_of_the_same_name_names_the_lineage_to_replace(
+    client: TestClient, tmp_path: Path
+) -> None:
+    first = _upload(client, tmp_path, "handbook.md", "# Handbook\n\nOriginal.")
+    _await_ready(client, str(first["document_id"]))
+
+    other = write_handbook(tmp_path, "other.md", "# Other\n\nDifferent content entirely.")
+    with other.open("rb") as handle:
+        clash = client.post(
+            "/v1/documents", files={"file": ("handbook.md", handle, "text/markdown")}
+        )
+
+    assert clash.status_code == 409
+    assert clash.json()["detail"]["logical_id"] == first["logical_id"]
+
+    # An unrelated document that happens to share a filename says so.
+    with other.open("rb") as handle:
+        renamed = client.post(
+            "/v1/documents",
+            files={"file": ("handbook.md", handle, "text/markdown")},
+            data={"name": "other-team-handbook.md"},
+        )
+    assert renamed.status_code == 202
+    assert renamed.json()["logical_id"] != first["logical_id"]
+
+
+def test_deleting_a_lineage_removes_every_version(client: TestClient, tmp_path: Path) -> None:
+    first = _upload(client, tmp_path, "handbook.md", "# Handbook\n\nVersion one.")
+    _await_ready(client, str(first["document_id"]))
+    logical_id = str(first["logical_id"])
+    revised = write_handbook(tmp_path, "handbook-v2.md", "# Handbook\n\nVersion two.")
+    with revised.open("rb") as handle:
+        second = client.put(
+            f"/v1/documents/{logical_id}", files={"file": ("handbook.md", handle, "text/markdown")}
+        )
+    _await_ready(client, second.json()["document_id"])
+
+    # The serving version cannot be dropped on its own.
+    assert client.delete(f"/v1/documents/{logical_id}/versions/2").status_code == 409
+    assert client.delete(f"/v1/documents/{logical_id}/versions/1").status_code == 204
+
+    assert client.delete(f"/v1/documents/{logical_id}").status_code == 204
+    assert client.get(f"/v1/documents/{logical_id}/versions").status_code == 404
+    assert client.get("/v1/documents").json()["total"] == 0

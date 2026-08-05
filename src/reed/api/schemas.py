@@ -16,6 +16,7 @@ DocumentStatus = Literal[
     "ready",
     "error",
     "deleting",
+    "superseded",
 ]
 CitationStatus = Literal["valid", "missing", "invalid", "not_applicable"]
 

@@ -8,6 +8,17 @@ fixes.
 
 ### Added
 
+- Replace a document with `PUT /v1/documents/{logical_id}`. The version currently serving stays
+  ready and indexed until the new one is, so a replacement never leaves the document unfindable.
+  Superseded versions keep their registry row and their stored original but lose their chunks:
+  they are not indexed at all rather than filtered at query time, so reindexing and retrieval need
+  no notion of them. `GET .../versions` shows the history, `DELETE .../versions/{n}` forgets one
+  superseded version, and deleting a lineage id removes every version — deleting only the current
+  one would make an older version reappear in search results.
+- Refuse an upload whose name already belongs to a document, naming the lineage to `PUT` to
+  instead of silently creating a second copy. A genuinely different document that happens to share
+  a filename can pass its own `name`. A failed upload is still re-uploadable, which is how a retry
+  works.
 - Give every document a logical identity that a future replacement can address: an opaque
   server-assigned `logical_id`, a display `name` and a `version`, all exposed on the upload
   response and the document list. A document's `id` is still derived from its content hash, which

@@ -143,7 +143,10 @@ Interactive API documentation is at `/docs`.
 | `GET` | `/metrics` | Prometheus text metrics; API-key protected when auth is enabled |
 | `POST` | `/v1/documents` | Queue a PDF, DOCX, HTML, Markdown or text upload; returns `202` or `503` with `Retry-After` |
 | `GET` | `/v1/documents` | Paginated document list and ingestion stage |
+| `PUT` | `/v1/documents/{logical_id}` | Publish new content for a document; returns `202` |
 | `GET` | `/v1/documents/{id}` | One document; poll until `ready` or `error` |
+| `GET` | `/v1/documents/{logical_id}/versions` | Every version, newest first |
+| `DELETE` | `/v1/documents/{logical_id}/versions/{n}` | Forget one superseded version |
 | `DELETE` | `/v1/documents/{id}` | Delete a ready/error document and its committed chunks |
 | `POST` | `/v1/ask` | SSE by default, JSON with `"stream": false` |
 
@@ -310,8 +313,9 @@ empty directory.
 - HTML extraction drops scripts and anything hidden by an inline style, the `hidden`
   attribute or `aria-hidden`. Text hidden by a stylesheet rule is not detected: Reed parses
   HTML, it does not apply CSS.
-- One logical corpus per Reed instance; document/index version history beyond the retained rollback
-  generation is not a content-versioning system.
+- One logical corpus per Reed instance. A document keeps its version history, but Reed is not
+  a general content-versioning system: only the current version is searchable, and superseded
+  versions are retained rather than pruned on a schedule.
 
 OCR, DOCX/HTML ingestion and document versioning are deliberately deferred to v0.4 rather than
 being partially implemented in this release.

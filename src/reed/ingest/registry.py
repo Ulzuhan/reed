@@ -27,6 +27,7 @@ DocumentStatus = Literal[
     "ready",
     "error",
     "deleting",
+    "superseded",
 ]
 GenerationStatus = Literal["building", "active", "previous", "failed"]
 
@@ -343,7 +344,11 @@ class DocumentRegistry:
         return _to_record(row) if row else None
 
     def list(self, *, limit: int | None = None, offset: int = 0) -> list[DocumentRecord]:
-        sql = "SELECT * FROM documents ORDER BY created_at DESC, filename"
+        """Current versions only: a superseded one is history, not a document."""
+        sql = (
+            "SELECT * FROM documents WHERE status != 'superseded' "
+            "ORDER BY created_at DESC, filename"
+        )
         params: tuple[object, ...] = ()
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
@@ -380,10 +385,91 @@ class DocumentRegistry:
         """The newest version of the lineage carrying this display name."""
         with self._lock:
             row = self._conn.execute(
-                "SELECT * FROM documents WHERE name=? ORDER BY version DESC LIMIT 1",
+                "SELECT * FROM documents WHERE name=? AND status != 'superseded' "
+                "ORDER BY version DESC LIMIT 1",
                 (name,),
             ).fetchone()
         return _to_record(row) if row else None
+
+    def claim_version(
+        self,
+        *,
+        doc_id: str,
+        filename: str,
+        sha256: str,
+        size_bytes: int,
+        stored_path: str,
+        logical_id: str,
+    ) -> DocumentRecord:
+        """Add the next version of an existing lineage, queued for ingestion.
+
+        The version that is currently serving stays ready and indexed until the
+        new one is, so a replacement never opens a window where the document
+        cannot be found.
+        """
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                rows = self._conn.execute(
+                    "SELECT * FROM documents WHERE logical_id=? ORDER BY version DESC",
+                    (logical_id,),
+                ).fetchall()
+                if not rows:
+                    raise KeyError(f"unknown document lineage: {logical_id}")
+                if self._conn.execute(
+                    "SELECT 1 FROM documents WHERE sha256=?", (sha256,)
+                ).fetchone():
+                    raise FileExistsError("This content is already in the registry")
+                current = rows[0]
+                self._conn.execute(
+                    "INSERT INTO documents "
+                    "(id, filename, sha256, status, chunks, pages, size_bytes, stored_path, "
+                    " error, created_at, logical_id, name, version) "
+                    "VALUES (?, ?, ?, 'queued', 0, NULL, ?, ?, NULL, ?, ?, ?, ?)",
+                    (
+                        doc_id,
+                        filename,
+                        sha256,
+                        size_bytes,
+                        stored_path,
+                        _now(),
+                        logical_id,
+                        str(current["name"]),
+                        int(current["version"]) + 1,
+                    ),
+                )
+                row = self._conn.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        assert row is not None
+        return _to_record(row)
+
+    def supersede_others(self, logical_id: str, *, keep_id: str) -> Sequence[DocumentRecord]:
+        """Retire every other serving version of a lineage.
+
+        Returns the retired records so the caller can drop their chunks. They
+        keep their row and their stored original: the history stays inspectable
+        and restorable, it just stops being searchable.
+        """
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                rows = self._conn.execute(
+                    "SELECT * FROM documents WHERE logical_id=? AND id!=? AND status='ready'",
+                    (logical_id, keep_id),
+                ).fetchall()
+                self._conn.execute(
+                    "UPDATE documents SET status='superseded' "
+                    "WHERE logical_id=? AND id!=? AND status='ready'",
+                    (logical_id, keep_id),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return [_to_record(row) for row in rows]
 
     # Annotated as Sequence because this class defines a method named `list`,
     # which shadows the builtin inside the class body.
@@ -398,7 +484,9 @@ class DocumentRegistry:
 
     def count(self) -> int:
         with self._lock:
-            row = self._conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM documents WHERE status != 'superseded'"
+            ).fetchone()
         return int(row["n"])
 
     def create_generation(
@@ -588,7 +676,7 @@ class DocumentRegistry:
                     return record, True
                 cursor = self._conn.execute(
                     "UPDATE documents SET status='deleting', error=NULL "
-                    "WHERE id=? AND status IN ('ready', 'error')",
+                    "WHERE id=? AND status IN ('ready', 'error', 'superseded')",
                     (doc_id,),
                 )
                 self._conn.commit()
