@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from reed.ingest.registry import DocumentRegistry
+from reed.ingest.registry import DocumentRegistry, NameConflictError
 
 
 @pytest.fixture
@@ -61,6 +61,61 @@ def test_errors_are_recorded_and_cleared_on_retry(registry: DocumentRegistry) ->
     assert retried.id == "d-abc"
     assert retried.status == "queued"
     assert retried.error is None
+
+
+def test_a_late_error_cannot_demote_a_serving_version(registry: DocumentRegistry) -> None:
+    # A failed post-commit cleanup or a double-reporting worker must not turn
+    # a document with committed points into a dead one.
+    add(registry)
+    registry.mark_processing("d-abc")
+    registry.mark_ready("d-abc", chunks=12, pages=3)
+
+    assert registry.mark_error("d-abc", "late cleanup failure") is False
+
+    record = registry.get("d-abc")
+    assert record is not None
+    assert record.status == "ready"
+    assert record.error is None
+
+
+def test_claiming_a_taken_name_conflicts_inside_the_transaction(
+    registry: DocumentRegistry,
+) -> None:
+    first, _ = registry.claim_upload(
+        doc_id="d-abc",
+        filename="handbook.md",
+        sha256="abc123",
+        size_bytes=42,
+        logical_id="l-one",
+        name="handbook.md",
+    )
+    registry.mark_processing("d-abc")
+    registry.mark_ready("d-abc", chunks=1, pages=None)
+
+    with pytest.raises(NameConflictError) as excinfo:
+        registry.claim_upload(
+            doc_id="d-new",
+            filename="handbook.md",
+            sha256="different456",
+            size_bytes=99,
+            logical_id="l-two",
+            name="handbook.md",
+        )
+
+    assert excinfo.value.existing.logical_id == first.logical_id
+    # The refused claim left nothing behind.
+    assert registry.get("d-new") is None
+    # A different display name is not a conflict.
+    renamed, duplicate = registry.claim_upload(
+        doc_id="d-new",
+        filename="handbook.md",
+        sha256="different456",
+        size_bytes=99,
+        logical_id="l-two",
+        name="other-team-handbook.md",
+    )
+    assert duplicate is False
+    assert renamed.status == "queued"
 
 
 def test_lookup_by_hash_powers_deduplication(registry: DocumentRegistry) -> None:

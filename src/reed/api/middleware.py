@@ -89,7 +89,7 @@ class RequestGuardMiddleware:
                 await _json_error(413, self._limit_message(path), send)
                 return
 
-        if method == "POST" and path in {"/v1/ask", "/v1/documents"}:
+        if (method == "POST" and path == "/v1/ask") or _is_document_upload(method, path):
             self.services.start_vectorstore_bootstrap()
             if not self.services.vectorstore_ready:
                 await _json_error(
@@ -128,7 +128,7 @@ class RequestGuardMiddleware:
         settings = self.services.settings
         if method == "POST" and path == "/v1/ask":
             return "ask", settings.ask_rate_limit_per_minute
-        if method == "POST" and path == "/v1/documents":
+        if _is_document_upload(method, path):
             return "upload", settings.upload_rate_limit_per_minute
         return None
 
@@ -136,15 +136,27 @@ class RequestGuardMiddleware:
         settings = self.services.settings
         if method == "POST" and path == "/v1/ask":
             return settings.max_json_body_kb * 1024
-        if method == "POST" and path == "/v1/documents":
+        if _is_document_upload(method, path):
             return settings.max_upload_mb * MEBIBYTE + settings.max_multipart_overhead_kb * 1024
         return None
 
     def _limit_message(self, path: str) -> str:
         settings = self.services.settings
-        if path == "/v1/documents":
+        if path.startswith("/v1/documents"):
             return f"Upload exceeds REED_MAX_UPLOAD_MB ({settings.max_upload_mb} MB)"
         return f"Request body exceeds REED_MAX_JSON_BODY_KB ({settings.max_json_body_kb} KB)"
+
+
+def _is_document_upload(method: str, path: str) -> bool:
+    """Both routes that carry a document body: upload, and replace-by-PUT.
+
+    They share every ingress guard — rate limit, body cap and the readiness
+    gate — because FastAPI spools the whole multipart body while resolving
+    ``UploadFile``, before any route-level check can run.
+    """
+    if method == "POST" and path == "/v1/documents":
+        return True
+    return method == "PUT" and path.startswith("/v1/documents/")
 
 
 def _headers(scope: Scope) -> dict[bytes, bytes]:

@@ -36,6 +36,18 @@ def test_short_follow_up_includes_the_previous_user_question() -> None:
     assert "contractors" in query
 
 
+def test_spanish_follow_up_with_inverted_punctuation_is_recognised() -> None:
+    history = [
+        Turn(role="user", content="¿Cuál es el límite de gastos?"),
+        Turn(role="assistant", content="75 euros [1]."),
+    ]
+
+    query = build_retrieval_query("¿Y si es un contratista?", history)
+
+    assert "límite de gastos" in query
+    assert "contratista" in query
+
+
 def test_citation_audit_rejects_unknown_source_numbers() -> None:
     status, warnings = audit_citations("The threshold is 75 euros [3].", source_count=2)
 

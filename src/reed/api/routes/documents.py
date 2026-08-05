@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import tempfile
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+import anyio.to_thread
 from fastapi import (
     APIRouter,
     Depends,
@@ -28,7 +30,7 @@ from reed.ingest.pipeline import (
     register_replacement,
     register_upload,
 )
-from reed.ingest.registry import DocumentRecord
+from reed.ingest.registry import DocumentRecord, NameConflictError
 from reed.log import get_logger
 
 logger = get_logger(__name__)
@@ -87,7 +89,9 @@ async def _staged_upload(
                         status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                         detail=f"File exceeds REED_MAX_UPLOAD_MB ({limit_mb} MB)",
                     )
-                staged.write(block)
+                # Disk writes block; a worker thread keeps concurrent SSE
+                # streams flowing while a large upload spools.
+                await anyio.to_thread.run_sync(staged.write, block)
         if written == 0:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -117,10 +121,22 @@ async def upload_document(
         )
     async with _staged_upload(services, file) as (staged_path, filename):
         lineage_name = _safe_filename(name) if name else filename
-        existing = services.registry.find_by_name(lineage_name)
-        # A failed document is not something to replace; re-uploading it is the
-        # documented way to retry, and the registry already allows it.
-        if existing is not None and existing.status != "error":
+        try:
+            # Hashing and copying up to REED_MAX_UPLOAD_MB is blocking work,
+            # so it runs off the event loop. The registry claims the display
+            # name in the same transaction that claims the content hash; a
+            # separate check here would race a concurrent upload into two
+            # lineages sharing one name.
+            record, duplicate = await anyio.to_thread.run_sync(
+                functools.partial(
+                    register_upload,
+                    services,
+                    source=staged_path,
+                    filename=filename,
+                    name=lineage_name,
+                )
+            )
+        except NameConflictError as exc:
             # Not superseded silently: replacing is a PUT, and the caller is
             # told which lineage to send it to. A genuinely different document
             # that happens to share a filename can pass its own `name`.
@@ -131,14 +147,10 @@ async def upload_document(
                         f"A document named '{lineage_name}' already exists. Replace it with "
                         "PUT /v1/documents/{logical_id}, or upload this one under another name."
                     ),
-                    "logical_id": existing.logical_id,
-                    "document_id": existing.id,
+                    "logical_id": exc.existing.logical_id,
+                    "document_id": exc.existing.id,
                 },
-            )
-        try:
-            record, duplicate = register_upload(
-                services, source=staged_path, filename=filename, name=lineage_name
-            )
+            ) from exc
         except HTTPException:
             raise
         except Exception as exc:
@@ -200,8 +212,15 @@ async def replace_document(
 
     async with _staged_upload(services, file) as (staged_path, filename):
         try:
-            record = register_replacement(
-                services, logical_id=logical_id, source=staged_path, filename=filename
+            # Same blocking hash-and-copy as the upload route.
+            record = await anyio.to_thread.run_sync(
+                functools.partial(
+                    register_replacement,
+                    services,
+                    logical_id=logical_id,
+                    source=staged_path,
+                    filename=filename,
+                )
             )
         except FileExistsError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

@@ -73,11 +73,19 @@ def resolve_embedding_identity(settings: Settings) -> ModelIdentity:
     )
 
 
-def ollama_tags(settings: Settings) -> dict[str, object]:
+def ollama_tags(settings: Settings, *, timeout: float | None = None) -> dict[str, object]:
+    """List Ollama's local models.
+
+    ``timeout`` defaults to the generation timeout; readiness probes pass
+    their own short one, because an orchestrator polls /ready on a budget of
+    seconds, not the minutes a generation may take.
+    """
     url = f"{settings.ollama_base_url.rstrip('/')}/api/tags"
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    if timeout is None:
+        timeout = settings.provider_timeout_seconds
     try:
-        with urllib.request.urlopen(request, timeout=settings.provider_timeout_seconds) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             value = json.load(response)
     except (OSError, urllib.error.URLError, ValueError) as exc:
         raise ModelIdentityError(

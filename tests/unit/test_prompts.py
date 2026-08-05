@@ -5,6 +5,7 @@ import json
 from reed.rag.prompts import (
     build_query_envelope,
     build_system_prompt,
+    insufficient_evidence_answer,
     no_context_answer,
 )
 from reed.rag.retriever import RetrievedChunk
@@ -70,6 +71,21 @@ def test_untrusted_excerpts_never_enter_the_system_prompt() -> None:
 def test_empty_corpus_message_follows_the_question_language() -> None:
     assert "Sube" in no_context_answer("¿Qué dice el documento?")
     assert "Upload" in no_context_answer("What does it say?")
+
+
+def test_insufficient_evidence_refusal_follows_the_question_language() -> None:
+    # The system prompt promises an answer in the question's language, and a
+    # refusal is still an answer.
+    cases = {
+        "¿Cuál es el límite de gastos?": "No encontré",
+        "Quel est le plafond des dépenses ?": "Je n'ai pas trouvé",
+        "Welche Regeln gelten für Spesen?": "Ich habe",
+        "Qual é o limite de despesas?": "Não encontrei",
+        "Quale è il limite di spesa?": "Non ho trovato",
+        "What is the expense limit?": "I could not find",
+    }
+    for question, expected in cases.items():
+        assert expected in insufficient_evidence_answer(question)
 
 
 def test_snippets_are_flattened_and_capped() -> None:

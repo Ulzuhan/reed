@@ -16,7 +16,14 @@ from fastapi.testclient import TestClient
 
 from reed.api.app import create_app
 from reed.config import Settings
-from reed.ingest.pipeline import document_id_for, point_id_for, sha256_file
+from reed.ingest.pipeline import (
+    document_id_for,
+    point_id_for,
+    process_document,
+    register_replacement,
+    register_upload,
+    sha256_file,
+)
 from reed.services import Services, build_services
 from tests.pdf_fixture import write_pdf
 
@@ -44,6 +51,20 @@ def write_handbook(tmp_path: Path, name: str = "expenses.md", body: str = HANDBO
 
 def count_points(services: Services) -> int:
     return services.qdrant.count(services.settings.collection, exact=True).count
+
+
+def force_status(services: Services, doc_id: str, status: str, error: str) -> None:
+    """Fabricate a stored state the guarded API can no longer produce.
+
+    `mark_error` refuses to demote a ready row, so tests simulating a crashed
+    process or a pre-guard database write the row directly.
+    """
+    registry = services.registry
+    with registry._lock:
+        registry._conn.execute(
+            "UPDATE documents SET status=?, error=? WHERE id=?", (status, error, doc_id)
+        )
+        registry._conn.commit()
 
 
 def test_ingesting_a_markdown_file_stores_retrievable_chunks(
@@ -157,7 +178,7 @@ def test_retrieval_requires_vector_and_registry_commits(services: Services, tmp_
 
     # Simulate the cross-store publication window or an orphan left by a
     # failed registry commit: committed vectors alone must never be visible.
-    services.registry.mark_error(result.document_id, "registry commit failed")
+    force_status(services, result.document_id, "error", "registry commit failed")
 
     assert retrieve(services, "expense threshold") == []
 
@@ -173,7 +194,7 @@ def test_reingesting_identical_content_does_not_duplicate_points(
 
     # A failed row is the supported retry path. Deterministic point ids must
     # overwrite rather than append when that retry runs.
-    services.registry.mark_error(first.document_id, "retry me")
+    force_status(services, first.document_id, "error", "retry me")
     record, duplicate = register_upload(services, source=path, filename=path.name)
     assert duplicate is False
     process_document(services, record.id)
@@ -460,6 +481,53 @@ def test_a_replacement_supersedes_the_previous_version(client: TestClient, tmp_p
     answer = client.post("/v1/ask", json={"question": "What is the cap?", "stream": False}).json()
     assert "120" in " ".join(source["excerpt"] for source in answer["sources"])
     assert "75 euros" not in " ".join(source["excerpt"] for source in answer["sources"])
+
+
+def test_replacement_body_is_rejected_before_fastapi_spools_it(settings: Settings) -> None:
+    # The PUT route resolves UploadFile exactly like the POST route does, so
+    # it shares the same ingress body cap.
+    limited = settings.model_copy(update={"max_upload_mb": 1})
+    with TestClient(create_app(limited)) as client:
+        response = client.put(
+            "/v1/documents/l-0123456789abcdef",
+            files={"file": ("huge.md", b"x" * (2 * 1024 * 1024), "text/markdown")},
+        )
+
+        assert response.status_code == 413
+
+
+def test_a_replacement_survives_a_failing_cleanup_flush(
+    services: Services, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Once the new version has committed, a store blip while retiring the old
+    # one must not demote it back to error — that would schedule deletion of
+    # points that are already serving.
+    first_path = write_handbook(tmp_path, "handbook.md", "# Handbook\n\nThe cap is 75 euros.")
+    record, _ = register_upload(services, source=first_path, filename="handbook.md")
+    assert process_document(services, record.id).status == "ready"
+
+    revised = write_handbook(tmp_path, "handbook-v2.md", "# Handbook\n\nThe cap is 120 euros.")
+    replacement = register_replacement(
+        services, logical_id=record.logical_id, source=revised, filename="handbook.md"
+    )
+
+    def failing_flush() -> None:
+        raise RuntimeError("the vector store blipped")
+
+    monkeypatch.setattr(services, "flush_pending_vector_cleanup", failing_flush)
+    result = process_document(services, replacement.id)
+
+    assert result.status == "ready"
+    current = services.registry.get(replacement.id)
+    assert current is not None and current.status == "ready"
+    superseded = services.registry.get(record.id)
+    assert superseded is not None and superseded.status == "superseded"
+
+    # The old version's cleanup stayed queued; a later flush completes it
+    # without touching the serving version's points.
+    monkeypatch.undo()
+    services.flush_pending_vector_cleanup()
+    assert count_points(services) == result.chunks
 
 
 def test_a_second_upload_of_the_same_name_names_the_lineage_to_replace(
