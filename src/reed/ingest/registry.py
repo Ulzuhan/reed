@@ -30,7 +30,7 @@ DocumentStatus = Literal[
 ]
 GenerationStatus = Literal["building", "active", "previous", "failed"]
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -43,7 +43,12 @@ CREATE TABLE IF NOT EXISTS documents (
     size_bytes  INTEGER NOT NULL DEFAULT 0,
     stored_path TEXT,
     error       TEXT,
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    -- Identity that survives a replacement, separate from the content hash the
+    -- id is derived from. One lineage, one or more versions.
+    logical_id  TEXT NOT NULL DEFAULT '',
+    name        TEXT NOT NULL DEFAULT '',
+    version     INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS index_generations (
@@ -81,6 +86,9 @@ class DocumentRecord:
     stored_path: str | None
     error: str | None
     created_at: str
+    logical_id: str = ""
+    name: str = ""
+    version: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +108,15 @@ class IndexGeneration:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def new_logical_id() -> str:
+    """Opaque identity for a document lineage.
+
+    Opaque rather than the file's name: it ends up in a URL path, and names
+    carry spaces, slashes and unicode. The name travels beside it.
+    """
+    return f"l-{uuid.uuid4().hex}"
 
 
 class DocumentRegistry:
@@ -130,6 +147,29 @@ class DocumentRegistry:
             self._conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_sha256_unique ON documents(sha256)"
             )
+        if version < 3:
+            # CREATE TABLE IF NOT EXISTS leaves an existing table alone, so the
+            # lineage columns arrive here for anyone upgrading.
+            existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(documents)")}
+            for column, definition in (
+                ("logical_id", "TEXT NOT NULL DEFAULT ''"),
+                ("name", "TEXT NOT NULL DEFAULT ''"),
+                ("version", "INTEGER NOT NULL DEFAULT 1"),
+            ):
+                if column not in existing:
+                    self._conn.execute(f"ALTER TABLE documents ADD COLUMN {column} {definition}")
+            # Every existing document becomes version 1 of its own lineage. The
+            # hash is already unique per row, which makes the backfill
+            # collision-free and the same on every machine.
+            self._conn.execute(
+                "UPDATE documents SET logical_id='l-' || substr(sha256, 1, 32), "
+                "name=filename, version=1 WHERE logical_id=''"
+            )
+            # After the columns exist, not in _SCHEMA, which runs before them.
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_lineage_version "
+                "ON documents(logical_id, version)"
+            )
         if version < SCHEMA_VERSION:
             self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
@@ -145,6 +185,8 @@ class DocumentRegistry:
         sha256: str,
         size_bytes: int,
         stored_path: str | None = None,
+        logical_id: str | None = None,
+        name: str | None = None,
     ) -> DocumentRecord:
         record, _ = self.claim_upload(
             doc_id=doc_id,
@@ -152,6 +194,8 @@ class DocumentRegistry:
             sha256=sha256,
             size_bytes=size_bytes,
             stored_path=stored_path,
+            logical_id=logical_id or new_logical_id(),
+            name=name or filename,
         )
         return record
 
@@ -163,6 +207,8 @@ class DocumentRegistry:
         sha256: str,
         size_bytes: int,
         stored_path: str | None = None,
+        logical_id: str,
+        name: str,
     ) -> tuple[DocumentRecord, bool]:
         """Atomically claim one content hash for ingestion.
 
@@ -182,6 +228,7 @@ class DocumentRegistry:
 
                 created_at = _now()
                 if existing is not None:
+                    # A retry keeps the lineage it already belongs to.
                     claimed_id = str(existing["id"])
                     self._conn.execute(
                         "UPDATE documents SET filename=?, status='queued', chunks=0, pages=NULL, "
@@ -193,9 +240,18 @@ class DocumentRegistry:
                     self._conn.execute(
                         "INSERT INTO documents "
                         "(id, filename, sha256, status, chunks, pages, size_bytes, stored_path, "
-                        " error, created_at) "
-                        "VALUES (?, ?, ?, 'queued', 0, NULL, ?, ?, NULL, ?)",
-                        (claimed_id, filename, sha256, size_bytes, stored_path, created_at),
+                        " error, created_at, logical_id, name, version) "
+                        "VALUES (?, ?, ?, 'queued', 0, NULL, ?, ?, NULL, ?, ?, ?, 1)",
+                        (
+                            claimed_id,
+                            filename,
+                            sha256,
+                            size_bytes,
+                            stored_path,
+                            created_at,
+                            logical_id,
+                            name,
+                        ),
                     )
                 row = self._conn.execute(
                     "SELECT * FROM documents WHERE id=?", (claimed_id,)
@@ -319,6 +375,26 @@ class DocumentRegistry:
                 unique_ids,
             ).fetchall()
         return {str(row["id"]) for row in rows}
+
+    def find_by_name(self, name: str) -> DocumentRecord | None:
+        """The newest version of the lineage carrying this display name."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM documents WHERE name=? ORDER BY version DESC LIMIT 1",
+                (name,),
+            ).fetchone()
+        return _to_record(row) if row else None
+
+    # Annotated as Sequence because this class defines a method named `list`,
+    # which shadows the builtin inside the class body.
+    def lineage(self, logical_id: str) -> Sequence[DocumentRecord]:
+        """Every version of one lineage, newest first."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM documents WHERE logical_id=? ORDER BY version DESC",
+                (logical_id,),
+            ).fetchall()
+        return [_to_record(row) for row in rows]
 
     def count(self) -> int:
         with self._lock:
@@ -545,6 +621,9 @@ def _to_record(row: sqlite3.Row) -> DocumentRecord:
         stored_path=row["stored_path"],
         error=row["error"],
         created_at=row["created_at"],
+        logical_id=str(row["logical_id"]),
+        name=str(row["name"]),
+        version=int(row["version"]),
     )
 
 

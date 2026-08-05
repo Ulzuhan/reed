@@ -39,6 +39,9 @@ READ_CHUNK = 1 << 20
 def _to_info(record: DocumentRecord) -> DocumentInfo:
     return DocumentInfo(
         id=record.id,
+        logical_id=record.logical_id,
+        name=record.name,
+        version=record.version,
         filename=record.filename,
         status=record.status,
         chunks=record.chunks,
@@ -127,7 +130,13 @@ async def upload_document(
             headers={"Retry-After": "2"},
         )
     services.metrics.increment("uploads_total")
-    return UploadAccepted(document_id=record.id, filename=record.filename, status=record.status)
+    return UploadAccepted(
+        document_id=record.id,
+        logical_id=record.logical_id,
+        version=record.version,
+        filename=record.filename,
+        status=record.status,
+    )
 
 
 @router.get("", response_model=DocumentList)

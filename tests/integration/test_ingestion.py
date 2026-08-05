@@ -259,6 +259,14 @@ def test_upload_endpoint_reports_progress_until_ready(client: TestClient, tmp_pa
     listing = client.get("/v1/documents").json()
     assert [d["id"] for d in listing["documents"]] == [document_id]
 
+    # The identity a replacement will address, distinct from the content id.
+    accepted = response.json()
+    listed = listing["documents"][0]
+    assert accepted["logical_id"].startswith("l-")
+    assert accepted["version"] == 1
+    assert listed["logical_id"] == accepted["logical_id"]
+    assert (listed["name"], listed["version"]) == ("expenses.md", 1)
+
 
 def test_document_listing_is_paginated(client: TestClient, tmp_path: Path) -> None:
     for index in range(3):

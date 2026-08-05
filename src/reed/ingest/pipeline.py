@@ -24,7 +24,7 @@ from reed.ingest.parsers import (
     EmptyDocumentError,
     UnsupportedFileError,
 )
-from reed.ingest.registry import DocumentRecord
+from reed.ingest.registry import DocumentRecord, new_logical_id
 from reed.log import get_logger
 
 if TYPE_CHECKING:
@@ -102,6 +102,8 @@ def register_upload(
         sha256=sha256,
         size_bytes=source.stat().st_size,
         stored_path=str(stored_path),
+        logical_id=new_logical_id(),
+        name=filename,
     )
     if duplicate:
         return record, True
