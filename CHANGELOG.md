@@ -6,6 +6,56 @@ fixes.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-05
+
+### Fixed
+
+- Apply the ingestion guards to `PUT /v1/documents/{logical_id}`. The rate limit, the body-size
+  limit and the vectorstore readiness gate matched only the `POST` routes, and a multipart body is
+  spooled to disk before route code can act — so a replacement upload could bypass every limit
+  that plain uploads were given, including on a deployment with no API key configured.
+- Keep a just-published document servable when retiring its superseded versions fails. A transient
+  Qdrant error during that flush marked the fresh version as `error` and enqueued the deletion of
+  its own committed points, leaving the lineage with nothing servable until a re-upload.
+  Retirement is now fault-tolerant, and a ready document can no longer be overwritten into
+  `error`.
+- Move upload hashing and staging off the event loop. Registering an upload ran SHA-256 and a copy
+  of up to the full upload size synchronously, stalling in-flight SSE streams on every upload.
+- Probe Ollama readiness with its own timeout — `REED_READINESS_PROBE_TIMEOUT_SECONDS`, default
+  5 seconds — instead of the 120-second generation timeout. A hung Ollama held the readiness lock
+  for the full generation timeout and serialized every probe behind it.
+- Claim a document's name inside the transaction that records the upload. Two concurrent uploads
+  with the same name could both pass the duplicate check and create two lineages with the same
+  visible name.
+- Strip an HTML element carrying the `hidden` attribute even when it also declares
+  `aria-hidden="false"` — `aria-hidden` changes screen-reader behaviour, not visibility, so the
+  combination smuggled invisible text past the stripping that exists to prevent exactly that.
+- Close resources shared with ingestion workers only after those workers have exited, instead of
+  closing under them after a one-second join.
+- Localize the insufficient-evidence refusal into the six languages the no-context answer already
+  speaks; a question asked in French was refused in English.
+- Recognize Spanish inverted-question follow-ups («¿y si…?»), which the follow-up detection
+  itself enumerates, by not anchoring the match to the start of the question.
+- Print calibrated evidence thresholds rounded in evaluation reports instead of at full float
+  precision.
+- Catch the documentation up with the 0.4.0 release: the README, SECURITY.md, the architecture
+  overview and the runbooks still described v0.3, and `uv.lock` still recorded 0.3.0. CI now
+  fails when the lockfile drifts (`uv lock --check`).
+
+### Changed
+
+- Run the container on Python 3.14.6, on a current base image build, and test the package against
+  Python 3.14 in CI.
+- Raise the pinned Compose images to Qdrant v1.18.3 and Ollama 0.32.5, and dependency floors to
+  uvicorn 0.52.1 and selectolax 0.4.
+- Watch the Compose image digests with Dependabot alongside the Dockerfile's — pinned digests
+  without an updater go stale.
+
+### Added
+
+- A short `CONTRIBUTING.md`: single-author project, issues welcome, pull requests coordinated
+  through an issue first.
+
 ## [0.4.0] - 2026-08-05
 
 ### Added
@@ -196,7 +246,8 @@ local cross-encoder reranking), a fully local profile via Ollama, SSE streaming 
 ahead of the first token, a built-in golden-set evaluation suite, and an embedded-Qdrant mode
 that runs without Docker.
 
-[Unreleased]: https://github.com/Ulzuhan/reed/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Ulzuhan/reed/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/Ulzuhan/reed/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/Ulzuhan/reed/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Ulzuhan/reed/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Ulzuhan/reed/compare/v0.1.0...v0.2.0
