@@ -18,6 +18,14 @@ from reed import __version__
 MANIFEST_NAME = "reed-backup-manifest.json"
 BACKUP_SCHEMA = 1
 
+# Derived caches living inside REED_DATA_DIR. A backup carries state that
+# cannot be recreated — the corpus, the registry, the vectors — and a model
+# cache is neither: it re-downloads. It is also a HuggingFace-style tree, whose
+# snapshots are symlinks into blobs, and following those is exactly what the
+# archive must not do. The container puts it here because a read-only root
+# filesystem leaves nowhere else persistent.
+EXCLUDED_DIRECTORIES = frozenset({".fastembed"})
+
 
 @dataclass(frozen=True, slots=True)
 class BackupManifest:
@@ -40,11 +48,15 @@ def create_backup(data_dir: Path, destination: Path) -> BackupManifest:
     files: dict[str, str] = {}
     paths: list[tuple[Path, str]] = []
     for path in sorted(source.rglob("*")):
+        relative_path = path.relative_to(source)
+        # Skipped before the symlink check, not after: the cache is full of them.
+        if relative_path.parts[0] in EXCLUDED_DIRECTORIES:
+            continue
         if path.is_symlink():
             raise ValueError(f"Backup source contains an unsupported symlink: {path}")
         if not path.is_file():
             continue
-        relative = path.relative_to(source).as_posix()
+        relative = relative_path.as_posix()
         files[relative] = _file_digest(path)
         paths.append((path, relative))
     manifest = BackupManifest(
