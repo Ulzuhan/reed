@@ -8,6 +8,13 @@ fixes.
 
 ### Fixed
 
+- Count `reed index status` from the registry and Qdrant instead of printing the counters stored
+  when a generation was registered. An index adopted at startup recorded zeros and nothing updated
+  them, so the command reported an empty active index for every deployment that had never
+  reindexed, which is the state it exists to diagnose.
+- Report a truncated or corrupt backup archive as such. `reed backup verify` surfaced the raw
+  lookup failure for the missing manifest, mid-recovery, when it is least welcome. Altered file
+  contents still name the file whose checksum failed.
 - Index documents that become ready while a reindex is building. Ingestion writes to the active
   collection, so a document uploaded mid-build was committed in the registry and absent from the
   index that reindex then activated: unreachable by search and refused as a duplicate on re-upload.

@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import io
+import json
 import tarfile
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 
-from reed.backups import create_backup, restore_backup, verify_backup
+from reed.backups import MANIFEST_NAME, create_backup, restore_backup, verify_backup
+
+
+def _add(archive: tarfile.TarFile, name: str, payload: bytes) -> None:
+    member = tarfile.TarInfo(name)
+    member.size = len(payload)
+    archive.addfile(member, io.BytesIO(payload))
 
 
 def test_backup_round_trip_verifies_every_file(tmp_path: Path) -> None:
@@ -80,6 +88,37 @@ def test_restore_keeps_recorded_permissions_but_drops_setuid(tmp_path: Path) -> 
     # The umask would otherwise widen a private registry to 0644.
     assert (restored / "reed.db").stat().st_mode & 0o7777 == 0o600
     assert (restored / "tool").stat().st_mode & 0o7777 == 0o755
+
+
+def test_verify_names_a_corrupt_archive_instead_of_raising_a_lookup_error(
+    tmp_path: Path,
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "reed.db").write_bytes(b"registry" * 200)
+    archive = tmp_path / "backup.tar.gz"
+    manifest = create_backup(data, archive)
+
+    # An interrupted copy: the manifest never arrives, and the raw lookup error
+    # for it used to be what an operator saw mid-recovery.
+    intact = archive.read_bytes()
+    archive.write_bytes(intact[: len(intact) // 2])
+    with pytest.raises(ValueError, match="not a readable Reed backup"):
+        verify_backup(archive)
+
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        verify_backup(tmp_path / "absent.tar.gz")
+
+    # Content that still decodes must name the file whose digest moved. Written
+    # rather than bit-flipped: where a flipped byte lands in the compressed
+    # stream depends on the platform's zlib.
+    tampered = tmp_path / "tampered.tar.gz"
+    with tarfile.open(tampered, "w:gz") as output:
+        _add(output, "data/reed.db", b"not what the manifest recorded")
+        _add(output, MANIFEST_NAME, (json.dumps(asdict(manifest), sort_keys=True) + "\n").encode())
+
+    with pytest.raises(ValueError, match=r"Checksum mismatch for reed\.db"):
+        verify_backup(tampered)
 
 
 def test_backup_rejects_path_traversal_members(tmp_path: Path) -> None:

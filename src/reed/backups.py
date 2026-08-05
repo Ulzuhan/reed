@@ -67,6 +67,20 @@ def create_backup(data_dir: Path, destination: Path) -> BackupManifest:
 
 
 def verify_backup(archive_path: Path) -> BackupManifest:
+    if not archive_path.is_file():
+        raise FileNotFoundError(f"Backup archive does not exist: {archive_path}")
+    try:
+        return _read_and_verify(archive_path)
+    except (tarfile.TarError, KeyError, EOFError, OSError, json.JSONDecodeError) as exc:
+        # A truncated or altered archive surfaces as a tar/gzip/lookup failure.
+        # Recovery is not the moment to decode a traceback.
+        raise ValueError(
+            f"{archive_path} is not a readable Reed backup ({type(exc).__name__}). "
+            "It may be truncated, corrupt, or written by another tool."
+        ) from exc
+
+
+def _read_and_verify(archive_path: Path) -> BackupManifest:
     with tarfile.open(archive_path, "r:gz") as archive:
         members = archive.getmembers()
         for member in members:

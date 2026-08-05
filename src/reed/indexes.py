@@ -40,6 +40,35 @@ class ReindexResult:
     previous: IndexGeneration | None
 
 
+def _committed_filter() -> models.Filter:
+    return models.Filter(
+        must=[
+            models.FieldCondition(
+                key=COMMITTED_PAYLOAD_KEY,
+                match=models.MatchValue(value=True),
+            )
+        ]
+    )
+
+
+def committed_chunk_count(services: Services, generation: IndexGeneration) -> int | None:
+    """Count published points in a generation, or None if its collection is gone.
+
+    Asked of Qdrant rather than read from the registry: the stored counts
+    describe the moment a generation was built, and ingestion, deletion and
+    legacy adoption all move on without them.
+    """
+    if not services.qdrant.collection_exists(generation.physical_collection):
+        return None
+    return int(
+        services.qdrant.count(
+            collection_name=generation.physical_collection,
+            count_filter=_committed_filter(),
+            exact=True,
+        ).count
+    )
+
+
 def desired_fingerprint(services: Services) -> tuple[dict[str, object], int]:
     embeddings = services.embeddings
     dimension = embedding_dimension(embeddings)
@@ -107,14 +136,7 @@ def reindex(services: Services) -> ReindexResult:
 
         committed = services.qdrant.count(
             collection_name=physical,
-            count_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key=COMMITTED_PAYLOAD_KEY,
-                        match=models.MatchValue(value=True),
-                    )
-                ]
-            ),
+            count_filter=_committed_filter(),
             exact=True,
         ).count
         if int(committed) != chunks:
