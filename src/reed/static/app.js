@@ -181,7 +181,7 @@ async function uploadFiles(files) {
       }
     }
   }
-  els.uploadProgress.textContent = "or drop PDF, DOCX, Markdown and text files here";
+  els.uploadProgress.textContent = "or drop PDF, DOCX, HTML, Markdown and text files here";
   refreshDocuments();
 }
 

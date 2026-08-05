@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from reed.ingest.chunking import split_sections
 from reed.ingest.parsers import RawSection
 
@@ -216,14 +218,15 @@ def test_overlap_keeps_content_contiguous() -> None:
     assert "w299" in joined
 
 
-def test_docx_sections_are_labelled_like_markdown() -> None:
-    # The DOCX parser emits Word heading styles as Markdown precisely so that
-    # section labelling stays one implementation rather than two.
+@pytest.mark.parametrize("source_type", ["docx", "html"])
+def test_converted_sources_are_labelled_like_markdown(source_type: str) -> None:
+    # DOCX and HTML both emit their headings as Markdown precisely so that
+    # section labelling stays one implementation rather than three.
     sections = [
         RawSection(text="# Expenses\n\nPre-approval above 75 euros.\n\n## Caps\n\nMeals are 40.")
     ]
 
-    chunks = split_sections(sections, "docx", chunk_size=40, chunk_overlap=0)
+    chunks = split_sections(sections, source_type, chunk_size=40, chunk_overlap=0)
 
     assert {chunk.section for chunk in chunks} == {"Expenses", "Caps"}
     assert next(c for c in chunks if "75 euros" in c.text).section == "Expenses"

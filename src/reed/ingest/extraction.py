@@ -15,7 +15,7 @@ History:
 
 1. Section-aware chunking with embedding input composed as
    ``Title: <filename>\\nSection: <section>\\n\\n<text>``, over the PDF, DOCX,
-   Markdown and plain-text parsers. Reed 0.3 shipped this scheme without
+   HTML, Markdown and plain-text parsers. Reed 0.3 shipped this scheme without
    recording it; Reed 0.2 embedded the raw chunk text and is therefore *not*
    this version. Adding a format does not change what an already-ingestible
    file produces, so a new parser alone does not bump this number.
