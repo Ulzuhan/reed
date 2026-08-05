@@ -101,7 +101,7 @@ class Report:
 
     def to_markdown(self) -> str:
         threshold = self.retrieval.recommended_min_score
-        threshold_label = str(threshold) if threshold is not None else "—"
+        threshold_label = f"{threshold:.3f}" if threshold is not None else "—"
         lines = [
             f"# Evaluation — {self.label}",
             "",
