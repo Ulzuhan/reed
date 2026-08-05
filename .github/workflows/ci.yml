@@ -28,7 +28,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
@@ -45,7 +45,7 @@ jobs:
     name: Type check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
@@ -62,14 +62,14 @@ jobs:
       fail-fast: false
       matrix:
         # The README claims 3.11+; this is what makes that claim true.
-        python: ["3.11", "3.12", "3.13"]
+        python: ["3.11", "3.12", "3.13", "3.14"]
     env:
       # No API keys in CI: the fake profile exercises every code path with
       # deterministic stand-in models.
       REED_PROFILE: fake
       FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.cache/fastembed
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
@@ -78,23 +78,23 @@ jobs:
           cache-suffix: tests-${{ matrix.python }}
           python-version: ${{ matrix.python }}
       - name: Cache FastEmbed models
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.cache/fastembed
           key: fastembed-${{ runner.os }}-bm25-v1
-      # Explicit --python overrides .python-version, which pins 3.13 for local work.
+      # Explicit --python overrides .python-version, which pins 3.14 for local work.
       - run: uv sync --group dev --python ${{ matrix.python }}
       - name: Test
-        if: matrix.python != '3.13'
+        if: matrix.python != '3.14'
         run: uv run --python ${{ matrix.python }} pytest
       - name: Test with coverage gate
-        if: matrix.python == '3.13'
+        if: matrix.python == '3.14'
         run: >-
           uv run --python ${{ matrix.python }} pytest
           --cov=reed --cov-branch --cov-report=term-missing:skip-covered
           --cov-fail-under=85
       - name: Critical-module branch coverage gates
-        if: matrix.python == '3.13'
+        if: matrix.python == '3.14'
         run: |
           uv run --python ${{ matrix.python }} coverage report --include='src/reed/api/routes/ask.py' --fail-under=75
           uv run --python ${{ matrix.python }} coverage report --include='src/reed/evals/judge.py' --fail-under=60
@@ -115,20 +115,20 @@ jobs:
       REED_DATA_DIR: /tmp/reed-e2e-data
       FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.cache/fastembed
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           enable-cache: true
           cache-suffix: browser
-          python-version: "3.13"
+          python-version: "3.14"
       - name: Cache FastEmbed models
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.cache/fastembed
           key: fastembed-${{ runner.os }}-bm25-v1
-      - run: uv sync --group dev --group e2e --python 3.13
+      - run: uv sync --group dev --group e2e --python 3.14
       - run: uv run playwright install --with-deps chromium
       - name: Start Reed
         run: |
@@ -153,7 +153,7 @@ jobs:
     name: Dependencies and secrets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -175,7 +175,7 @@ jobs:
     env:
       REED_PROFILE: fake
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 

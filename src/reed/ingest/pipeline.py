@@ -242,8 +242,16 @@ def _process_document(services: Services, doc_id: str) -> IngestResult:
             status="error",
             error="Ingestion could not be committed",
         )
-    # Only now, with the new version serving, does the old one stop.
-    retire_superseded_versions(services, record)
+    # Only now, with the new version serving, does the old one stop. From here
+    # on the new version is committed: a transient store failure while retiring
+    # the old ones must not demote it, and must not reach the crash handler,
+    # whose cleanup would schedule this version's committed points for
+    # deletion. The superseded rows keep their cleanup queued for the next
+    # flush instead.
+    try:
+        retire_superseded_versions(services, record)
+    except Exception as exc:  # noqa: BLE001 — retried before the next search
+        logger.warning("deferred superseded-version cleanup for %s: %s", doc_id, exc)
     logger.info("ingested %s: %d chunks", record.filename, chunks)
     return IngestResult(document_id=doc_id, status="ready", chunks=chunks)
 

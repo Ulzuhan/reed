@@ -283,8 +283,13 @@ def parse_html(path: Path, *, max_chars: int | None = None) -> list[RawSection]:
 
     for node in tree.css(_HTML_DISCARDED):
         node.decompose()
-    for node in body.css("[hidden], [aria-hidden]"):
-        if node.attributes.get("aria-hidden", "true") == "true":
+    # The `hidden` attribute hides unconditionally — aria-hidden="false" on the
+    # same element changes screen-reader behaviour, not visibility. aria-hidden
+    # alone hides unless it explicitly opts out with "false".
+    for node in body.css("[hidden]"):
+        node.decompose()
+    for node in body.css("[aria-hidden]"):
+        if (node.attributes.get("aria-hidden") or "").strip().casefold() != "false":
             node.decompose()
     for node in body.css("[style]"):
         if _HIDDEN_STYLE.search(node.attributes.get("style") or ""):
