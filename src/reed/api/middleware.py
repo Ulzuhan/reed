@@ -89,7 +89,7 @@ class RequestGuardMiddleware:
                 await _json_error(413, self._limit_message(path), send)
                 return
 
-        if (method == "POST" and path == "/v1/ask") or _is_document_upload(method, path):
+        if _is_json_query(method, path) or _is_document_upload(method, path):
             self.services.start_vectorstore_bootstrap()
             if not self.services.vectorstore_ready:
                 await _json_error(
@@ -128,13 +128,17 @@ class RequestGuardMiddleware:
         settings = self.services.settings
         if method == "POST" and path == "/v1/ask":
             return "ask", settings.ask_rate_limit_per_minute
+        # Its own bucket: retrieval without generation is cheap enough that
+        # sharing the ask budget would throttle it for no reason.
+        if method == "POST" and path == "/v1/search":
+            return "search", settings.search_rate_limit_per_minute
         if _is_document_upload(method, path):
             return "upload", settings.upload_rate_limit_per_minute
         return None
 
     def _body_limit(self, method: str, path: str) -> int | None:
         settings = self.services.settings
-        if method == "POST" and path == "/v1/ask":
+        if _is_json_query(method, path):
             return settings.max_json_body_kb * 1024
         if _is_document_upload(method, path):
             return settings.max_upload_mb * MEBIBYTE + settings.max_multipart_overhead_kb * 1024
@@ -145,6 +149,15 @@ class RequestGuardMiddleware:
         if path.startswith("/v1/documents"):
             return f"Upload exceeds REED_MAX_UPLOAD_MB ({settings.max_upload_mb} MB)"
         return f"Request body exceeds REED_MAX_JSON_BODY_KB ({settings.max_json_body_kb} KB)"
+
+
+def _is_json_query(method: str, path: str) -> bool:
+    """Both JSON query routes: generation, and retrieval on its own.
+
+    They share the body cap and the readiness gate — neither can be served
+    without the vector store — but not the rate-limit bucket.
+    """
+    return method == "POST" and path in {"/v1/ask", "/v1/search"}
 
 
 def _is_document_upload(method: str, path: str) -> bool:

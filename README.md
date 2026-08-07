@@ -149,10 +149,18 @@ Interactive API documentation is at `/docs`.
 | `DELETE` | `/v1/documents/{logical_id}/versions/{n}` | Forget one superseded version |
 | `DELETE` | `/v1/documents/{id}` | Delete a ready/error document and its committed chunks |
 | `POST` | `/v1/ask` | SSE by default, JSON with `"stream": false` |
+| `POST` | `/v1/search` | Ranked evidence with no generation, for callers whose own model answers |
 
 `GET /v1/*` and metrics responses are marked `Cache-Control: no-store`. The UI reports upload
 progress and ingestion stages, renders structured API errors, and lets the user stop an in-flight
 answer stream.
+
+`/v1/search` returns the same numbered `sources` as `/v1/ask` and nothing built on top of them —
+no answer, no citation audit. It reports the evidence threshold rather than applying it
+(`sufficient_evidence`, `min_evidence_score`), because a caller whose own model does the
+generation needs the scores to decide with; `/v1/ask` still abstains on weak evidence. It has its
+own rate-limit bucket, `REED_SEARCH_RATE_LIMIT_PER_MINUTE`, since retrieval costs one embedding
+call rather than a generation.
 
 Uploads are idempotent by content SHA-256. Reed validates body and document limits before expensive
 work, parses in a spawned process with wall-clock and Linux resource limits, embeds outside the
