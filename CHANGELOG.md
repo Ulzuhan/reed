@@ -6,6 +6,13 @@ fixes.
 
 ## [Unreleased]
 
+### Changed
+
+- Raise the pinned Compose image to Qdrant v1.19.0. The v1.18.3 pin carries
+  GHSA-5p4m-2wfm-xmqj (quadratic CPU in the dashboard's bundled js-yaml); v1.19.0 does not fix it
+  either — js-yaml 4.3.1 landed a day after that release was cut — but the "track the latest
+  upstream release" policy asks for the bump regardless.
+
 ## [0.4.1] - 2026-08-05
 
 ### Fixed
