@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
@@ -128,12 +129,27 @@ def _read_and_verify(archive_path: Path) -> BackupManifest:
 
 
 def restore_backup(archive_path: Path, data_dir: Path) -> BackupManifest:
+    """Extract a verified archive into an empty or absent ``data_dir``.
+
+    Staging happens *inside* the target rather than beside it. Under the shipped
+    Compose file ``REED_DATA_DIR`` is a volume mountpoint, so its parent is the
+    container's root filesystem — which is read-only, is not writable by the
+    unprivileged ``reed`` user, cannot have the mountpoint ``rmdir``'d out from
+    under it, and lives on a different filesystem than the volume. An adjacent
+    scratch directory therefore cannot work there at all. Staging inside the
+    target makes every rename same-filesystem by construction.
+
+    The cost is that publication is a handful of renames rather than one atomic
+    directory swap. Nothing recoverable rides on that: the target is required to
+    be empty, so a failed restore is rolled back to exactly what it found.
+    """
     manifest = verify_backup(archive_path)
     target = data_dir.resolve()
     if target.exists() and any(target.iterdir()):
         raise FileExistsError(f"Refusing to overwrite non-empty data directory: {target}")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    scratch = Path(tempfile.mkdtemp(prefix=".reed-restore-", dir=target.parent))
+    created_target = not target.exists()
+    target.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix=".reed-restore-", dir=target))
     try:
         with tarfile.open(archive_path, "r:gz") as archive:
             for relative in manifest.files:
@@ -149,13 +165,28 @@ def restore_backup(archive_path: Path, data_dir: Path) -> BackupManifest:
                 # umask, which would widen a 0600 registry to 0644. setuid,
                 # setgid and sticky bits are dropped: an archive is data.
                 destination.chmod(member.mode & 0o777)
-        if target.exists():
-            target.rmdir()
-        scratch.replace(target)
+        for entry in scratch.iterdir():
+            entry.rename(target / entry.name)
+        scratch.rmdir()
     except Exception:
-        shutil.rmtree(scratch, ignore_errors=True)
+        _discard_partial_restore(target, created_target=created_target)
         raise
     return manifest
+
+
+def _discard_partial_restore(target: Path, *, created_target: bool) -> None:
+    """Put the target back the way the restore found it: empty, or absent.
+
+    Restore refuses a non-empty target, so everything below it arrived with this
+    attempt and nothing recoverable can be lost. ``rmtree`` cannot unlink a
+    mountpoint, which is the wanted outcome when the target is a volume — and
+    recreating a target this attempt did not create is best-effort, because
+    failing in here would mask the failure that got us here.
+    """
+    shutil.rmtree(target, ignore_errors=True)
+    if not created_target:
+        with contextlib.suppress(OSError):
+            target.mkdir(parents=True, exist_ok=True)
 
 
 def _validate_member(member: tarfile.TarInfo) -> None:

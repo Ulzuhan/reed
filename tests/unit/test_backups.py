@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tarfile
 from dataclasses import asdict
 from pathlib import Path
@@ -88,6 +89,68 @@ def test_restore_keeps_recorded_permissions_but_drops_setuid(tmp_path: Path) -> 
     # The umask would otherwise widen a private registry to 0644.
     assert (restored / "reed.db").stat().st_mode & 0o7777 == 0o600
     assert (restored / "tool").stat().st_mode & 0o7777 == 0o755
+
+
+def test_restore_works_when_only_the_target_itself_is_writable(tmp_path: Path) -> None:
+    """The containerized shape: REED_DATA_DIR is a volume, its parent is not writable.
+
+    Restore used to stage in `target.parent` and rename the result into place,
+    which under the shipped Compose file meant staging on the read-only
+    container root filesystem. Nothing about that could succeed.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root ignores the directory permissions this test relies on")
+
+    data = tmp_path / "data"
+    (data / "uploads").mkdir(parents=True)
+    (data / "reed.db").write_bytes(b"registry")
+    (data / "uploads" / "policy.md").write_text("policy", encoding="utf-8")
+    archive = tmp_path / "backup.tar.gz"
+    create_backup(data, archive)
+
+    rootfs = tmp_path / "rootfs"
+    rootfs.mkdir()
+    target = rootfs / "volume"
+    target.mkdir()
+    rootfs.chmod(0o555)
+    try:
+        restore_backup(archive, target)
+    finally:
+        rootfs.chmod(0o755)
+
+    assert (target / "reed.db").read_bytes() == b"registry"
+    assert (target / "uploads" / "policy.md").read_text(encoding="utf-8") == "policy"
+    assert not list(target.glob(".reed-restore-*"))
+
+
+def test_a_failed_restore_leaves_the_target_as_it_found_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "reed.db").write_bytes(b"registry")
+    (data / "policy.md").write_text("policy", encoding="utf-8")
+    archive = tmp_path / "backup.tar.gz"
+    create_backup(data, archive)
+
+    def explode(*args: object, **kwargs: object) -> None:
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr("reed.backups.shutil.copyfileobj", explode)
+
+    # A target this restore created is removed again...
+    absent = tmp_path / "absent"
+    with pytest.raises(OSError, match="no space"):
+        restore_backup(archive, absent)
+    assert not absent.exists()
+
+    # ...and one that already existed is handed back empty, not half-restored.
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    with pytest.raises(OSError, match="no space"):
+        restore_backup(archive, existing)
+    assert existing.is_dir()
+    assert not list(existing.iterdir())
 
 
 def test_verify_names_a_corrupt_archive_instead_of_raising_a_lookup_error(
