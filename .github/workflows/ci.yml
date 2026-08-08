@@ -263,6 +263,48 @@ jobs:
           echo "$answer" | jq -e '.sources | length > 0' > /dev/null
           echo "$answer" | jq -e '.answer | contains("[1]")' > /dev/null
 
+      # The restore path this covers is the one the runbook documents and the
+      # only one downstream consumers run: into the named volume, as the
+      # unprivileged container user, with a read-only root filesystem around
+      # it. Nothing else in the repository exercises it.
+      - name: Restore a backup into a fresh volume and serve from it
+        run: |
+          set -euo pipefail
+          # The archive has to outlive the container that writes it, and /tmp
+          # is a tmpfs in the shipped compose — so it goes to a bind mount.
+          # World-writable because the image runs as an unprivileged user whose
+          # uid does not match the runner's.
+          mkdir -p "${PWD}/backup"
+          chmod 777 "${PWD}/backup"
+
+          docker compose stop api
+          docker compose run --rm -T --no-deps --volume "${PWD}/backup:/backup" \
+            api reed backup create /backup/reed-backup.tar.gz
+          docker compose run --rm -T --no-deps --volume "${PWD}/backup:/backup:ro" \
+            api reed backup verify /backup/reed-backup.tar.gz
+
+          # Restore refuses a non-empty target, so the volumes are recreated
+          # from scratch. REED_DATA_DIR is then a bare mountpoint whose parent
+          # is the read-only rootfs — the shape that used to fail.
+          docker compose down -v
+          docker compose run --rm -T --no-deps --volume "${PWD}/backup:/backup:ro" \
+            api reed backup restore /backup/reed-backup.tar.gz
+
+          # The corpus and the registry came back from the archive; the vectors
+          # went with the Qdrant volume, so they are rebuilt from the restored
+          # uploads exactly as the disaster-recovery runbook prescribes.
+          docker compose up -d --wait qdrant
+          docker compose run --rm -T api reed index reindex
+          docker compose up -d --wait
+
+          curl -sf http://localhost:8000/v1/documents | jq -e '.documents | length == 1' > /dev/null
+          answer=$(curl -sf -X POST http://localhost:8000/v1/ask \
+            -H 'content-type: application/json' \
+            -d '{"question":"What is the expense threshold?","stream":false}')
+          echo "$answer" | jq .
+          echo "$answer" | jq -e '.sources | length > 0' > /dev/null
+          echo "$answer" | jq -e '.answer | contains("[1]")' > /dev/null
+
       - name: Server logs on failure
         if: failure()
         run: docker compose logs --no-color
