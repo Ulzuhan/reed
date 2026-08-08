@@ -12,7 +12,9 @@ fixes.
   answer — MCP servers, agent hosts, external UIs — and for inspecting what the index returns for
   a query. It returns the same numbered `sources` as `/v1/ask`, reports the evidence threshold
   instead of applying it (`sufficient_evidence`, `min_evidence_score`), and draws on its own
-  rate-limit bucket, `REED_SEARCH_RATE_LIMIT_PER_MINUTE` (default 120/minute).
+  rate-limit bucket, `REED_SEARCH_RATE_LIMIT_PER_MINUTE` (default 120/minute), and its own
+  retrieval-thread budget, `REED_MAX_CONCURRENT_SEARCHES` (default 16), so a burst of searches
+  queues against itself instead of starving uploads and `/v1/ask`.
 
 ### Changed
 

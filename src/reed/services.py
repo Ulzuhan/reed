@@ -14,6 +14,8 @@ from collections import defaultdict, deque
 from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
+import anyio
+
 from reed.config import Settings, get_settings
 from reed.ingest.registry import DocumentRegistry
 from reed.log import get_logger, setup_logging
@@ -121,6 +123,12 @@ class Services:
         self._ingestion_workers: list[threading.Thread] = []
         self.ingestion_access = threading.BoundedSemaphore(settings.max_concurrent_ingestions)
         self.ask_access = asyncio.Semaphore(settings.max_concurrent_asks)
+        # Thread-pool tokens of its own. Retrieval for /v1/search runs in a
+        # worker thread, and anyio's default limiter is a single process-wide
+        # budget shared with upload spooling and /v1/ask's own retrieval — so
+        # without this, searches have no bound but the per-client rate limit
+        # and can starve everything else that needs a thread.
+        self.search_access = anyio.CapacityLimiter(settings.max_concurrent_searches)
         self.rate_limiter = SlidingWindowRateLimiter()
         self.metrics = RuntimeMetrics()
         # Private diagnostic for readiness; public responses expose only a

@@ -119,6 +119,9 @@ class Settings(BaseSettings):
     readiness_probe_timeout_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
     max_output_tokens: int = Field(default=1_024, ge=64, le=8_192)
     max_concurrent_asks: int = Field(default=8, ge=1, le=100)
+    # Retrieval without generation is cheap enough to deserve a looser bound
+    # than asks — but a bound, and one of its own: see `Services.search_access`.
+    max_concurrent_searches: int = Field(default=16, ge=1, le=100)
     max_concurrent_ingestions: int = Field(default=2, ge=1, le=32)
     max_queued_ingestions: int = Field(default=16, ge=1, le=1_000)
     ask_rate_limit_per_minute: int = Field(default=60, ge=0, le=10_000)
