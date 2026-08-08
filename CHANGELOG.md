@@ -6,6 +6,8 @@ fixes.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-08
+
 ### Added
 
 - `POST /v1/search`: ranked evidence with no generation, for callers whose own model writes the
@@ -22,6 +24,10 @@ fixes.
   GHSA-5p4m-2wfm-xmqj (quadratic CPU in the dashboard's bundled js-yaml); v1.19.0 does not fix it
   either — js-yaml 4.3.1 landed a day after that release was cut — but the "track the latest
   upstream release" policy asks for the bump regardless.
+- Raise the pypdf floor to 6.15. CVE-2026-71852 and CVE-2026-71870 are resource-exhaustion bugs
+  reachable from a crafted PDF — large CID font width ranges and large `/ToUnicode` streams — and
+  reed parses uploaded PDFs, although ingestion already isolates parsing in a spawned process
+  under wall-clock and resource limits.
 
 ### Fixed
 
@@ -30,7 +36,8 @@ fixes.
   root filesystem — so the scratch directory could not be created, the mountpoint could not be
   removed, and the final rename would have crossed filesystems. Staging now happens inside the
   target, which makes every rename same-filesystem by construction. A restore that fails partway
-  leaves the target exactly as it found it.
+  leaves the target exactly as it found it. The containerized path is now exercised by CI, which
+  restores into a freshly created volume and serves from the result.
 
 ## [0.4.1] - 2026-08-05
 
@@ -272,7 +279,8 @@ local cross-encoder reranking), a fully local profile via Ollama, SSE streaming 
 ahead of the first token, a built-in golden-set evaluation suite, and an embedded-Qdrant mode
 that runs without Docker.
 
-[Unreleased]: https://github.com/Ulzuhan/reed/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/Ulzuhan/reed/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Ulzuhan/reed/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/Ulzuhan/reed/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/Ulzuhan/reed/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Ulzuhan/reed/compare/v0.2.0...v0.3.0
