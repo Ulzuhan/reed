@@ -13,6 +13,15 @@ fixes.
   either — js-yaml 4.3.1 landed a day after that release was cut — but the "track the latest
   upstream release" policy asks for the bump regardless.
 
+### Fixed
+
+- Restore a backup into a Compose volume. `reed backup restore` staged the extracted tree in
+  `REED_DATA_DIR`'s *parent*, which under the shipped Compose file is the container's read-only
+  root filesystem — so the scratch directory could not be created, the mountpoint could not be
+  removed, and the final rename would have crossed filesystems. Staging now happens inside the
+  target, which makes every rename same-filesystem by construction. A restore that fails partway
+  leaves the target exactly as it found it.
+
 ## [0.4.1] - 2026-08-05
 
 ### Fixed

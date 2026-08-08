@@ -47,8 +47,25 @@ procedure and retain it beside the Reed archive.
 6. Start Reed, require `GET /ready` to return `200`, inspect `reed index status`, list documents,
    and ask a known-answer and a known-negative question.
 
-Restore verifies the archive first, extracts into an adjacent scratch directory and atomically
-renames it into place. It refuses a non-empty target rather than overwriting recoverable data.
+Restore verifies the archive first, extracts into a scratch directory *inside* the target and then
+promotes the extracted entries one level up. It refuses a non-empty target rather than overwriting
+recoverable data, and a restore that fails partway leaves the target exactly as it found it —
+empty, or absent.
+
+### Restore into a Compose volume
+
+`REED_DATA_DIR=/data` is the named volume's mountpoint, so the container's own root filesystem is
+read-only around it. Staging inside the target is what makes this work; no writable path beside
+`/data` is needed. With the stack stopped and `reed_data` empty:
+
+```bash
+docker compose run --rm --no-deps \
+  --volume "$PWD/reed-backup-20260804.tar.gz:/backup/reed-backup.tar.gz:ro" \
+  api reed backup restore /backup/reed-backup.tar.gz
+```
+
+Restoring into a volume that already holds a corpus is refused. Remove the volume first
+(`docker compose down -v`, or `docker volume rm reed_reed_data`), then run the command above.
 
 ## Change embedding or chunking configuration
 
