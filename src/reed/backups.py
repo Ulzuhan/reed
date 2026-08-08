@@ -165,7 +165,10 @@ def restore_backup(archive_path: Path, data_dir: Path) -> BackupManifest:
                 # umask, which would widen a 0600 registry to 0644. setuid,
                 # setgid and sticky bits are dropped: an archive is data.
                 destination.chmod(member.mode & 0o777)
-        for entry in scratch.iterdir():
+        # Materialized before the first rename: this loop empties the very
+        # directory it walks, and POSIX leaves it unspecified whether readdir
+        # reports entries touched after the directory was opened.
+        for entry in list(scratch.iterdir()):
             entry.rename(target / entry.name)
         scratch.rmdir()
     except Exception:
