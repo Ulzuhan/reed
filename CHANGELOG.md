@@ -6,6 +6,14 @@ fixes.
 
 ## [Unreleased]
 
+### Added
+
+- `POST /v1/search`: ranked evidence with no generation, for callers whose own model writes the
+  answer — MCP servers, agent hosts, external UIs — and for inspecting what the index returns for
+  a query. It returns the same numbered `sources` as `/v1/ask`, reports the evidence threshold
+  instead of applying it (`sufficient_evidence`, `min_evidence_score`), and draws on its own
+  rate-limit bucket, `REED_SEARCH_RATE_LIMIT_PER_MINUTE` (default 120/minute).
+
 ### Changed
 
 - Raise the pinned Compose image to Qdrant v1.19.0. The v1.18.3 pin carries

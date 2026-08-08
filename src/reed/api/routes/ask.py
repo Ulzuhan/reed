@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from reed.api.deps import ServicesDep, require_api_key
-from reed.api.schemas import AskRequest, AskResponse, Source
+from reed.api.schemas import AskRequest, AskResponse, to_sources
 from reed.api.sse import PING, SSE_HEADERS, sse_event
 from reed.log import get_logger
 from reed.rag.chain import (
@@ -24,7 +24,6 @@ from reed.rag.chain import (
     answer,
     answer_stream,
 )
-from reed.rag.retriever import RetrievedChunk
 from reed.services import Services
 
 logger = get_logger(__name__)
@@ -38,27 +37,9 @@ PING_INTERVAL_SECONDS = 15.0
 _STREAM_END = object()
 
 
-def _to_sources(chunks: list[RetrievedChunk]) -> list[Source]:
-    """Number the chunks — these are the ``[n]`` markers the model must use."""
-    return [
-        Source(
-            n=number,
-            doc_id=chunk.doc_id,
-            filename=chunk.filename,
-            page=chunk.page,
-            section=chunk.section,
-            location=chunk.location,
-            score=round(chunk.score, 4),
-            snippet=chunk.snippet,
-            excerpt=chunk.text,
-        )
-        for number, chunk in enumerate(chunks, start=1)
-    ]
-
-
 def _render(event: StreamEvent) -> str:
     if isinstance(event, SourcesEvent):
-        sources = [source.model_dump() for source in _to_sources(event.chunks)]
+        sources = [source.model_dump() for source in to_sources(event.chunks)]
         return sse_event("sources", {"sources": sources})
     if isinstance(event, TokenEvent):
         return sse_event("token", {"t": event.text})
@@ -184,7 +165,7 @@ async def ask(
 
     return AskResponse(
         answer=result.text,
-        sources=_to_sources(result.sources),
+        sources=to_sources(result.sources),
         latency_ms=result.latency_ms,
         citation_status=result.citation_status,
         citation_warnings=result.citation_warnings,

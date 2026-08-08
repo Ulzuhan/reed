@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+if TYPE_CHECKING:
+    from reed.rag.retriever import RetrievedChunk
 
 DocumentStatus = Literal[
     "pending",
@@ -106,3 +109,50 @@ class AskResponse(BaseModel):
     latency_ms: int
     citation_status: CitationStatus
     citation_warnings: list[str] = Field(default_factory=list)
+
+
+class SearchRequest(BaseModel):
+    """Retrieval without generation: the same query rules as :class:`AskRequest`."""
+
+    query: str = Field(min_length=1, max_length=4000)
+    top_k: int | None = Field(default=None, ge=1, le=50)
+
+    @field_validator("query")
+    @classmethod
+    def _query_is_not_whitespace(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("query must contain non-whitespace characters")
+        return stripped
+
+
+class SearchResponse(BaseModel):
+    sources: list[Source]
+    latency_ms: int
+    sufficient_evidence: bool = Field(
+        description=(
+            "Whether the top score clears the configured evidence threshold. Results are "
+            "returned either way; /v1/ask is what abstains."
+        )
+    )
+    min_evidence_score: float = Field(
+        description="The threshold this verdict was taken against, in the queried score domain"
+    )
+
+
+def to_sources(chunks: list[RetrievedChunk]) -> list[Source]:
+    """Number the chunks — these are the ``[n]`` markers the model must use."""
+    return [
+        Source(
+            n=number,
+            doc_id=chunk.doc_id,
+            filename=chunk.filename,
+            page=chunk.page,
+            section=chunk.section,
+            location=chunk.location,
+            score=round(chunk.score, 4),
+            snippet=chunk.snippet,
+            excerpt=chunk.text,
+        )
+        for number, chunk in enumerate(chunks, start=1)
+    ]

@@ -21,9 +21,13 @@ Expenses above 75 euros require pre-approval from your manager.
 """
 
 
-def upload(client: TestClient, tmp_path: Path, name: str = "expenses.md") -> str:
+def upload(
+    client: TestClient, tmp_path: Path, name: str = "expenses.md", content: str = HANDBOOK
+) -> str:
     path = tmp_path / name
-    path.write_text(HANDBOOK, encoding="utf-8")
+    # Uploads deduplicate on content, so a caller wanting a second document has
+    # to give it different text, not just a different filename.
+    path.write_text(content, encoding="utf-8")
     with path.open("rb") as handle:
         response = client.post("/v1/documents", files={"file": (name, handle, "text/markdown")})
     document_id = cast(str, response.json()["document_id"])

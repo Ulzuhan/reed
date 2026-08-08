@@ -123,6 +123,9 @@ class Settings(BaseSettings):
     max_queued_ingestions: int = Field(default=16, ge=1, le=1_000)
     ask_rate_limit_per_minute: int = Field(default=60, ge=0, le=10_000)
     upload_rate_limit_per_minute: int = Field(default=20, ge=0, le=10_000)
+    # Retrieval without generation costs one embedding call and one query, so
+    # it gets its own, looser bucket rather than competing with generation.
+    search_rate_limit_per_minute: int = Field(default=120, ge=0, le=10_000)
     sse_queue_size: int = Field(default=64, ge=4, le=4_096)
     max_json_body_kb: int = Field(default=128, ge=16, le=1_024)
     # Compose-only sizing knob, kept here so every REED_* setting has one
