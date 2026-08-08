@@ -30,10 +30,15 @@ async def search(services: ServicesDep, request: SearchRequest) -> SearchRespons
     started = time.perf_counter()
     try:
         # Retrieval is synchronous (Qdrant client and optional local reranker),
-        # so it goes to a worker thread rather than stalling the event loop.
+        # so it goes to a worker thread rather than stalling the event loop —
+        # against this route's own token budget, so a burst of searches queues
+        # against itself instead of draining the pool uploads and /v1/ask share.
+        # Waiting for a token happens inside the timeout, which is the point:
+        # a caller that would only queue is told so rather than held.
         async with asyncio.timeout(services.settings.provider_timeout_seconds):
             chunks = await anyio.to_thread.run_sync(
-                lambda: retrieve(services, request.query, request.top_k, apply_threshold=False)
+                lambda: retrieve(services, request.query, request.top_k, apply_threshold=False),
+                limiter=services.search_access,
             )
     except TimeoutError as exc:
         services.metrics.increment("search_errors_total")

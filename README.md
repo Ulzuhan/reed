@@ -160,7 +160,9 @@ no answer, no citation audit. It reports the evidence threshold rather than appl
 (`sufficient_evidence`, `min_evidence_score`), because a caller whose own model does the
 generation needs the scores to decide with; `/v1/ask` still abstains on weak evidence. It has its
 own rate-limit bucket, `REED_SEARCH_RATE_LIMIT_PER_MINUTE`, since retrieval costs one embedding
-call rather than a generation.
+call rather than a generation, and its own retrieval-thread budget,
+`REED_MAX_CONCURRENT_SEARCHES`, so a burst of searches queues against itself rather than taking
+the threads uploads and `/v1/ask` need.
 
 Uploads are idempotent by content SHA-256. Reed validates body and document limits before expensive
 work, parses in a spawned process with wall-clock and Linux resource limits, embeds outside the
