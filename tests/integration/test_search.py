@@ -120,6 +120,5 @@ def test_search_requires_the_api_key_when_one_is_configured(tmp_path: Path) -> N
     with TestClient(create_app(settings)) as client:
         assert client.post("/v1/search", json={"query": "hello"}).status_code == 401
         keyed = {"X-API-Key": "s3cret"}
-        while client.get("/ready", headers=keyed).status_code != 200:
-            pass
+        wait_until_ready(client, headers=keyed)
         assert client.post("/v1/search", json={"query": "hello"}, headers=keyed).status_code == 200
