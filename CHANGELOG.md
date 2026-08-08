@@ -14,6 +14,22 @@ fixes.
   instead of applying it (`sufficient_evidence`, `min_evidence_score`), and draws on its own
   rate-limit bucket, `REED_SEARCH_RATE_LIMIT_PER_MINUTE` (default 120/minute).
 
+### Changed
+
+- Raise the pinned Compose image to Qdrant v1.19.0. The v1.18.3 pin carries
+  GHSA-5p4m-2wfm-xmqj (quadratic CPU in the dashboard's bundled js-yaml); v1.19.0 does not fix it
+  either — js-yaml 4.3.1 landed a day after that release was cut — but the "track the latest
+  upstream release" policy asks for the bump regardless.
+
+### Fixed
+
+- Restore a backup into a Compose volume. `reed backup restore` staged the extracted tree in
+  `REED_DATA_DIR`'s *parent*, which under the shipped Compose file is the container's read-only
+  root filesystem — so the scratch directory could not be created, the mountpoint could not be
+  removed, and the final rename would have crossed filesystems. Staging now happens inside the
+  target, which makes every rename same-filesystem by construction. A restore that fails partway
+  leaves the target exactly as it found it.
+
 ## [0.4.1] - 2026-08-05
 
 ### Fixed
