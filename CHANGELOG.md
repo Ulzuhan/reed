@@ -6,6 +6,23 @@ fixes.
 
 ## [Unreleased]
 
+### Security
+
+- Keep `REED_DATA_DIR` to the account that runs Reed. Nothing set a mode or a umask, so on a
+  bare-metal install the data directory came out `0755` and the registry and every stored original
+  `0644` — readable by any other local account, which is precisely what a private RAG should not
+  do. Reed now creates the directory `0700` and writes what it stores `0600`. A directory that
+  already exists is left alone, since an operator may have widened it deliberately, but startup
+  warns when the mode is wider and names the `chmod` that closes it. The container was never
+  affected: one unprivileged user, an isolated volume.
+
+### Fixed
+
+- Say so when a failed restore cannot clean up after itself. The rollback swallows its own errors
+  on purpose — they must not mask the failure that caused it — but it promised the target was left
+  "empty, or absent" without checking. A cleanup that fails now logs what it left behind, instead
+  of surfacing later as a confusing "Refusing to overwrite non-empty data directory".
+
 ## [0.5.0] - 2026-08-08
 
 ### Added

@@ -15,6 +15,10 @@ from pathlib import Path, PurePosixPath
 from typing import IO
 
 from reed import __version__
+from reed.config import DATA_DIR_MODE
+from reed.log import get_logger
+
+logger = get_logger(__name__)
 
 MANIFEST_NAME = "reed-backup-manifest.json"
 BACKUP_SCHEMA = 1
@@ -148,7 +152,7 @@ def restore_backup(archive_path: Path, data_dir: Path) -> BackupManifest:
     if target.exists() and any(target.iterdir()):
         raise FileExistsError(f"Refusing to overwrite non-empty data directory: {target}")
     created_target = not target.exists()
-    target.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents=True, exist_ok=True, mode=DATA_DIR_MODE)
     scratch = Path(tempfile.mkdtemp(prefix=".reed-restore-", dir=target))
     try:
         with tarfile.open(archive_path, "r:gz") as archive:
@@ -178,18 +182,30 @@ def restore_backup(archive_path: Path, data_dir: Path) -> BackupManifest:
 
 
 def _discard_partial_restore(target: Path, *, created_target: bool) -> None:
-    """Put the target back the way the restore found it: empty, or absent.
+    """Best-effort: put the target back the way the restore found it.
 
     Restore refuses a non-empty target, so everything below it arrived with this
     attempt and nothing recoverable can be lost. ``rmtree`` cannot unlink a
     mountpoint, which is the wanted outcome when the target is a volume — and
     recreating a target this attempt did not create is best-effort, because
     failing in here would mask the failure that got us here.
+
+    For the same reason the cleanup cannot raise, so when it does not manage to
+    empty the target it says so: otherwise the next restore refuses a non-empty
+    directory and the operator reads that as a different problem than the one
+    that actually happened.
     """
     shutil.rmtree(target, ignore_errors=True)
     if not created_target:
         with contextlib.suppress(OSError):
-            target.mkdir(parents=True, exist_ok=True)
+            target.mkdir(parents=True, exist_ok=True, mode=DATA_DIR_MODE)
+    leftovers = sorted(entry.name for entry in target.iterdir()) if target.is_dir() else []
+    if leftovers:
+        logger.warning(
+            "restore rollback could not empty %s (%s left); remove it before retrying",
+            target,
+            ", ".join(leftovers[:5]),
+        )
 
 
 def _validate_member(member: tarfile.TarInfo) -> None:

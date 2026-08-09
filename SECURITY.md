@@ -39,6 +39,12 @@ Document excerpts are untrusted prompt data. Reed keeps them out of the system m
 citation structure, cited figures, and verbatim quotes. Model output can still be wrong: citations
 are evidence links, not a cryptographic proof of semantic entailment.
 
+`REED_DATA_DIR` holds the corpus, the stored originals and the registry, so Reed creates it `0700`
+and writes what it stores there `0600`. It will not narrow a directory that already exists — an
+operator may have widened one on purpose — but it warns at startup when the mode is wider, naming
+the `chmod` that closes it. In the container this is moot: one unprivileged user, an isolated
+volume. On a shared host, the directory mode is what keeps another local account out.
+
 Backups contain the original documents, registry metadata and embedded vectors. Create them only
 while Reed is stopped, protect them like the source corpus, verify their checksums before restore,
 and remember that remote Qdrant requires a separate coordinated snapshot. See the

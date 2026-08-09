@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from reed.backups import MANIFEST_NAME, create_backup, restore_backup, verify_backup
+from tests.conftest import capturing_reed_warnings
 
 
 def _add(archive: tarfile.TarFile, name: str, payload: bytes) -> None:
@@ -151,6 +152,36 @@ def test_a_failed_restore_leaves_the_target_as_it_found_it(
         restore_backup(archive, existing)
     assert existing.is_dir()
     assert not list(existing.iterdir())
+
+
+def test_a_rollback_that_cannot_clean_up_says_what_it_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Swallowing the cleanup failure is right; leaving it unsaid is not.
+
+    The next restore would refuse a non-empty target, which reads as a
+    different problem than the one that actually happened.
+    """
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "reed.db").write_bytes(b"registry")
+    archive = tmp_path / "backup.tar.gz"
+    create_backup(data, archive)
+
+    def explode(*args: object, **kwargs: object) -> None:
+        raise OSError("no space left on device")
+
+    def cleanup_achieves_nothing(*args: object, **kwargs: object) -> None:
+        """`rmtree(ignore_errors=True)` failing to remove what was staged."""
+
+    monkeypatch.setattr("reed.backups.shutil.copyfileobj", explode)
+    monkeypatch.setattr("reed.backups.shutil.rmtree", cleanup_achieves_nothing)
+
+    with capturing_reed_warnings(caplog), pytest.raises(OSError, match="no space"):
+        restore_backup(archive, tmp_path / "target")
+
+    assert "could not empty" in caplog.text
+    assert ".reed-restore-" in caplog.text
 
 
 def test_verify_names_a_corrupt_archive_instead_of_raising_a_lookup_error(
