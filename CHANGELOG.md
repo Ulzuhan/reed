@@ -6,6 +6,8 @@ fixes.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-09
+
 ### Security
 
 - Keep `REED_DATA_DIR` to the account that runs Reed. Nothing set a mode or a umask, so on a
@@ -296,7 +298,8 @@ local cross-encoder reranking), a fully local profile via Ollama, SSE streaming 
 ahead of the first token, a built-in golden-set evaluation suite, and an embedded-Qdrant mode
 that runs without Docker.
 
-[Unreleased]: https://github.com/Ulzuhan/reed/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Ulzuhan/reed/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/Ulzuhan/reed/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Ulzuhan/reed/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/Ulzuhan/reed/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/Ulzuhan/reed/compare/v0.3.0...v0.4.0
