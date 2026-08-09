@@ -189,7 +189,8 @@ generations are deliberately refused. See [the runbook](docs/runbooks.md).
 
 Upgrading from an earlier release: every index built before v0.4 mismatches the fingerprint on
 upgrade, because the extraction pipeline version is now part of it. Stop Reed, keep a backup,
-install v0.4 and run `reed index reindex`; the previous generation stays available for rollback.
+install the current release and run `reed index reindex`; the previous generation stays available
+for rollback.
 Do not delete the old collection before the new generation has been activated and verified.
 
 ## Evaluation 2.0
@@ -274,9 +275,11 @@ Every setting is a `REED_*` environment variable or a line in `.env`; see
 | `REED_MAX_CONCURRENT_INGESTIONS` | `2` | Worker threads in the single process |
 | `REED_MAX_QUEUED_INGESTIONS` | `16` | Durable queue backpressure boundary |
 | `REED_MAX_CONCURRENT_ASKS` | `8` | Concurrent generation boundary |
+| `REED_MAX_CONCURRENT_SEARCHES` | `16` | Retrieval threads for `/v1/search`, separate from the pool uploads and `/v1/ask` draw on |
+| `REED_SEARCH_RATE_LIMIT_PER_MINUTE` | `120` | Per-client budget for `/v1/search` |
 | `REED_MAX_UPLOAD_MB` | `25` | Enforced at stream and staging layers |
 | `REED_API_KEY` | empty | Requires `X-API-Key` on protected endpoints when set |
-| `REED_DATA_DIR` | `./data` | Registry, uploads and embedded Qdrant |
+| `REED_DATA_DIR` | `./data` | Registry, uploads and embedded Qdrant; created `0700` |
 
 ## Operations and security
 
@@ -310,17 +313,18 @@ make eval
 ```
 
 Tests use deterministic fake dense embeddings with real embedded Qdrant and real FastEmbed BM25.
-CI covers Python 3.11–3.13, strict mypy, Ruff, global and critical-module branch gates, dependency
-and history scanning, Chromium UI behavior, container scanning and a full Compose upload-to-answer
-smoke test. Release artifacts are rebuilt from the source distribution and smoke-tested from an
-empty directory.
+CI covers Python 3.11–3.14, strict mypy, Ruff, global and critical-module branch gates, dependency
+and history scanning, Chromium UI behavior, container scanning, a full Compose upload-to-answer
+smoke test and a backup/restore round trip into a freshly created volume. Release artifacts are
+rebuilt from the source distribution and smoke-tested from an empty directory.
 
 ## Current limitations
 
 - Single-node only; no distributed ingestion claims or multi-tenant authorization.
-- PDF, DOCX, HTML, Markdown and plain text only; OCR for scanned documents is not included. A
-  fully scanned PDF is rejected with a clear error. A mostly scanned PDF that still contains a
-  little extractable text — a cover page, headers — ingests only that text, without a warning.
+- PDF, DOCX, HTML, Markdown and plain text only; OCR for scanned documents is not included, so
+  run those through an OCR tool before uploading. A fully scanned PDF is rejected with a clear
+  error. A mostly scanned PDF that still contains a little extractable text — a cover page,
+  headers — ingests only that text, without a warning.
 - DOCX extraction applies tracked changes and ignores comments and footnotes.
 - HTML extraction drops scripts and anything hidden by an inline style, the `hidden`
   attribute or `aria-hidden`. Text hidden by a stylesheet rule is not detected: Reed parses
@@ -328,9 +332,6 @@ empty directory.
 - One logical corpus per Reed instance. A document keeps its version history, but Reed is not
   a general content-versioning system: only the current version is searchable, and superseded
   versions are retained rather than pruned on a schedule.
-
-OCR for scanned documents is deliberately deferred to v0.5 rather than being partially
-implemented in this release.
 
 ## License
 
