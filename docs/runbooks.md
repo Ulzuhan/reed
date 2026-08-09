@@ -1,6 +1,6 @@
 # Operations runbooks
 
-These procedures assume the supported Reed v0.4 topology: one Reed API process and one logical
+These procedures assume the supported Reed topology: one Reed API process and one logical
 corpus. Replace `uv run` with the installed `reed` command when using a wheel.
 
 ## Backup and verify

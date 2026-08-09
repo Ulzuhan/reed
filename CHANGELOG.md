@@ -6,6 +6,15 @@ fixes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Catch the documentation up with 0.5.x. The architecture overview still described the restore that
+  0.5.0 replaced — an adjacent scratch directory and an atomic rename — which was the one stale
+  line that contradicted the code rather than merely aging. The README promised OCR "deferred to
+  v0.5" from a v0.5 release, claimed a CI matrix that stops at Python 3.13, and told upgraders to
+  install v0.4; the architecture and runbook documents were still stamped v0.4. The configuration
+  table also gains the two `/v1/search` controls and notes that `REED_DATA_DIR` is created `0700`.
+
 ## [0.5.1] - 2026-08-09
 
 ### Security

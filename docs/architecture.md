@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes Reed v0.4's implementation boundaries. The [README](../README.md) is the
+This document describes Reed's implementation boundaries. The [README](../README.md) is the
 operator-facing overview and [runbooks](runbooks.md) cover procedures.
 
 ## Components
@@ -165,8 +165,10 @@ queue depth, retrieval latency and abstentions; authenticated deployments protec
 the same key.
 
 Offline backups archive `REED_DATA_DIR` with a manifest and per-file SHA-256. Verification precedes
-restore, and restore uses an adjacent scratch directory plus atomic rename into an empty target.
-Remote Qdrant is outside this archive and needs its own coordinated snapshot.
+restore, and restore stages inside the empty target and promotes the extracted entries one level up:
+under the shipped Compose file `REED_DATA_DIR` is a volume mountpoint, so a scratch directory beside
+it would land on the read-only container root. Remote Qdrant is outside this archive and needs its
+own coordinated snapshot.
 
 ## Testing and release gates
 
