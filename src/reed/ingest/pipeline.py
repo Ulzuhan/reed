@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from qdrant_client import models
 
+from reed.config import DATA_DIR_MODE, DATA_FILE_MODE
 from reed.ingest.chunking import Chunk, split_sections
 from reed.ingest.parser_worker import parse_file_isolated
 from reed.ingest.parsers import (
@@ -94,7 +95,7 @@ def register_upload(
         services.flush_pending_vector_cleanup()
     stored_path = source
     if copy:
-        services.settings.uploads_dir.mkdir(parents=True, exist_ok=True)
+        services.settings.uploads_dir.mkdir(parents=True, exist_ok=True, mode=DATA_DIR_MODE)
         stored_path = services.settings.uploads_dir / f"{doc_id}__{Path(filename).name}"
 
     record, duplicate = services.registry.claim_upload(
@@ -113,6 +114,9 @@ def register_upload(
     try:
         if copy and source.resolve() != claimed_path.resolve():
             shutil.copyfile(source, claimed_path)
+            # The stored original is the uploaded document itself. It inherits
+            # the umask otherwise, which on a shared host publishes the corpus.
+            claimed_path.chmod(DATA_FILE_MODE)
     except Exception:
         claimed_path.unlink(missing_ok=True)
         services.registry.mark_error(record.id, "Could not store the uploaded file")
@@ -149,10 +153,11 @@ def register_replacement(
         stored_path=str(services.settings.uploads_dir / f"{document_id_for(sha256)}__{filename}"),
         logical_id=logical_id,
     )
-    services.settings.uploads_dir.mkdir(parents=True, exist_ok=True)
+    services.settings.uploads_dir.mkdir(parents=True, exist_ok=True, mode=DATA_DIR_MODE)
     claimed = Path(record.stored_path or "")
     try:
         shutil.copyfile(source, claimed)
+        claimed.chmod(DATA_FILE_MODE)
     except Exception:
         claimed.unlink(missing_ok=True)
         services.registry.delete(record.id, expected_status="queued")

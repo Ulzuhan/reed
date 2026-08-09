@@ -12,11 +12,12 @@ import threading
 import time
 from collections import defaultdict, deque
 from contextlib import nullcontext
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
 
-from reed.config import Settings, get_settings
+from reed.config import DATA_DIR_MODE, Settings, get_settings
 from reed.ingest.registry import DocumentRegistry
 from reed.log import get_logger, setup_logging
 from reed.observability import RuntimeMetrics
@@ -566,5 +567,27 @@ def build_services(settings: Settings | None = None) -> Services:
     settings = settings or get_settings()
     setup_logging(settings.log_level)
     settings.validate_ready()
-    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    prepare_data_dir(settings.data_dir)
     return Services(settings)
+
+
+def prepare_data_dir(data_dir: Path) -> None:
+    """Create the data directory private, and complain if an old one is not.
+
+    ``mkdir`` cannot narrow a directory that already exists, and silently
+    chmod'ing one an operator may have widened deliberately would be worse than
+    saying so: a deployment that shares the corpus with a group would lose that
+    access on the next restart, with nothing in the logs to explain it. So new
+    installations get ``0700`` and older ones get told.
+    """
+    data_dir.mkdir(parents=True, exist_ok=True, mode=DATA_DIR_MODE)
+    mode = data_dir.stat().st_mode & 0o777
+    if mode & ~DATA_DIR_MODE:
+        logger.warning(
+            "%s is mode %o: the corpus and the registry are readable beyond this account. "
+            "Run `chmod %o %s` unless that access is deliberate.",
+            data_dir,
+            mode,
+            DATA_DIR_MODE,
+            data_dir,
+        )

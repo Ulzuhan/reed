@@ -29,6 +29,15 @@ QWEN3_EMBED_QUERY_PREFIX = (
 )
 EMBEDDINGGEMMA_HYBRID_MIN_SCORE = 0.8333333333333333
 
+# The data directory holds the corpus and the registry, and nothing outside the
+# account running Reed has business reading either. Without an explicit mode the
+# default umask leaves both world-readable, which on a shared host hands over
+# the very documents this is built to keep local. The directory mode is what
+# actually holds: the registry is SQLite in WAL mode, so `-wal` and `-shm` files
+# appear beside it, and no per-file rule can cover everything SQLite creates.
+DATA_DIR_MODE = 0o700
+DATA_FILE_MODE = 0o600
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(

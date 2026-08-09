@@ -7,6 +7,7 @@ content hashes that make re-ingestion idempotent.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
@@ -16,6 +17,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
+
+from reed.config import DATA_DIR_MODE, DATA_FILE_MODE
 
 DocumentStatus = Literal[
     "pending",
@@ -134,10 +137,16 @@ class NameConflictError(Exception):
 class DocumentRegistry:
     def __init__(self, path: Path) -> None:
         self.path = path
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=DATA_DIR_MODE)
         # Ingestion runs in a worker thread while requests read on another.
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(path, check_same_thread=False)
+        # SQLite creates the file under the umask, and its `-wal` and `-shm`
+        # siblings land the same way on every connection. Narrowing the one
+        # file that outlives them is cheap; the directory mode is what actually
+        # keeps the registry private (see DATA_DIR_MODE).
+        with contextlib.suppress(OSError):
+            path.chmod(DATA_FILE_MODE)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=30000")

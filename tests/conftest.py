@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import logging
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -41,6 +43,25 @@ def wait_until_ready(
         if time.monotonic() > deadline:
             pytest.fail("vector store never became ready")
         time.sleep(0.05)
+
+
+@contextlib.contextmanager
+def capturing_reed_warnings(caplog: pytest.LogCaptureFixture) -> Iterator[None]:
+    """Capture warnings from the ``reed`` logger tree.
+
+    ``setup_logging`` detaches that tree from the root logger, which is where
+    caplog listens — so a test that wants Reed's own warnings has to attach to
+    it directly.
+    """
+    logger = logging.getLogger("reed")
+    previous = logger.level
+    logger.addHandler(caplog.handler)
+    logger.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        logger.setLevel(previous)
+        logger.removeHandler(caplog.handler)
 
 
 @pytest.fixture
