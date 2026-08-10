@@ -8,6 +8,16 @@ fixes.
 
 ### Fixed
 
+- Heartbeat an SSE stream while it waits for a slot on `REED_MAX_CONCURRENT_ASKS`. The stream
+  emits its `meta` event before acquiring the semaphore, so past the concurrency limit a caller
+  received `200 OK`, one event, and then nothing at all — no ping — for as long as the request it
+  was queued behind, up to twice `REED_PROVIDER_TIMEOUT_SECONDS`. A reverse proxy drops an idle
+  response long before that, turning backpressure into a stream that opened and silently died. The
+  wait now pings on the same interval the token loop uses, and a stream abandoned while queued
+  releases the slot it was waiting for instead of stranding it.
+
+### Fixed
+
 - Catch the documentation up with 0.5.x. The architecture overview still described the restore that
   0.5.0 replaced — an adjacent scratch directory and an atomic rename — which was the one stale
   line that contradicted the code rather than merely aging. The README promised OCR "deferred to

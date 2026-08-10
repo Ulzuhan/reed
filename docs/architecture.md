@@ -135,8 +135,11 @@ SourcesEvent → TokenEvent* → DoneEvent
                          ↘ ErrorEvent
 ```
 
-Retrieval and reranking run in worker threads. SSE uses a bounded queue and heartbeat comments;
-stopping the client cancels generation cooperatively. Final citation auditing checks source range,
+Retrieval and reranking run in worker threads. SSE uses a bounded queue and heartbeat comments —
+including while the stream is queued behind `REED_MAX_CONCURRENT_ASKS`, because the response and
+its `meta` event are already committed by then and a silent stream is one a reverse proxy drops.
+Stopping the client cancels generation cooperatively, and a stream abandoned mid-queue gives back
+the slot it was waiting for. Final citation auditing checks source range,
 sentence coverage, cited numbers and verbatim quotes and exposes warnings to both API and UI.
 
 ## Evaluation
