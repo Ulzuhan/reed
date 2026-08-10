@@ -6,6 +6,18 @@ fixes.
 
 ## [Unreleased]
 
+### Added
+
+- `REED_MAX_CONCURRENT_UPLOADS` (default 4): how many uploads may be spooling at once. Each holds
+  two copies on the temporary filesystem — the multipart parser's and Reed's staged one — and
+  nothing bounded how many could be in flight, so two concurrent 25 MB uploads already needed more
+  than the 64 MiB `/tmp` the Compose file shipped. The result was `ENOSPC`, which fails whichever
+  upload happens to be writing rather than the one that overflowed, at well under the documented
+  `REED_MAX_UPLOAD_MB`. Uploads past the bound wait briefly and are then refused with `503` and
+  `Retry-After`, the way a full ingestion queue already is. The Compose `/tmp` default rises from
+  64 MiB to 256 MiB to match the new default, and the sizing rule in the README becomes
+  `2 × REED_MAX_UPLOAD_MB × REED_MAX_CONCURRENT_UPLOADS`.
+
 ### Fixed
 
 - Catch the documentation up with 0.5.x. The architecture overview still described the restore that

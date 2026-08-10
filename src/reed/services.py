@@ -130,6 +130,11 @@ class Services:
         # without this, searches have no bound but the per-client rate limit
         # and can starve everything else that needs a thread.
         self.search_access = anyio.CapacityLimiter(settings.max_concurrent_searches)
+        # Spool slots. Held from before the multipart body is parsed until the
+        # route's staged copy is gone, because both live on the same temporary
+        # filesystem and only the ingress middleware runs early enough to bound
+        # the first of them.
+        self.upload_access = asyncio.Semaphore(settings.max_concurrent_uploads)
         self.rate_limiter = SlidingWindowRateLimiter()
         self.metrics = RuntimeMetrics()
         # Private diagnostic for readiness; public responses expose only a

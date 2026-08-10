@@ -117,8 +117,11 @@ REED_PROFILE=local docker compose up -d --wait
 The image is published for `linux/amd64` and `linux/arm64`. Pin
 `ghcr.io/ulzuhan/reed:0.5.1` or its digest for reproducible deployments. Compose binds the API to
 loopback, uses a read-only root filesystem, drops capabilities, enables `no-new-privileges`, and
-sizes `/tmp` to 64 MiB by default. The upload spool and Reed's staged file can coexist briefly, so
-keep `REED_TMPFS_SIZE` above approximately `2 × REED_MAX_UPLOAD_MB` plus multipart overhead.
+sizes `/tmp` to 256 MiB by default. The upload spool and Reed's staged file coexist for every
+upload in flight, so keep `REED_TMPFS_SIZE` above roughly `2 × REED_MAX_UPLOAD_MB ×
+REED_MAX_CONCURRENT_UPLOADS` plus multipart overhead. That last term is what makes the product
+finite: without it, concurrency was unbounded and the tmpfs could be filled at well under the
+documented upload limit.
 
 ## Supported deployment boundary
 
@@ -278,6 +281,7 @@ Every setting is a `REED_*` environment variable or a line in `.env`; see
 | `REED_MAX_CONCURRENT_SEARCHES` | `16` | Retrieval threads for `/v1/search`, separate from the pool uploads and `/v1/ask` draw on |
 | `REED_SEARCH_RATE_LIMIT_PER_MINUTE` | `120` | Per-client budget for `/v1/search` |
 | `REED_MAX_UPLOAD_MB` | `25` | Enforced at stream and staging layers |
+| `REED_MAX_CONCURRENT_UPLOADS` | `4` | Uploads spooled at once; sized against `REED_TMPFS_SIZE` |
 | `REED_API_KEY` | empty | Requires `X-API-Key` on protected endpoints when set |
 | `REED_DATA_DIR` | `./data` | Registry, uploads and embedded Qdrant; created `0700` |
 
