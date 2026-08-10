@@ -8,6 +8,26 @@ fixes.
 
 ### Fixed
 
+- Embed the query outside the embedded-Qdrant lock. Retrieval delegated the whole search to
+  `langchain-qdrant`, which embeds the query inside the call — so the provider round-trip ran while
+  the process-global vector lock was held, and every concurrent `/v1/ask`, every `/v1/search` and
+  every ingestion commit waited on it. The lock now covers only the database call, matching what
+  the ingestion path already did. Reed builds the Qdrant request itself; it is deliberately the
+  same request as before, down to the RRF fusion and the per-branch prefetch limit, because the
+  calibrated evidence threshold is a number in that fused score domain. A new integration test
+  pins the two implementations together, and the shipped evaluation returns byte-identical
+  retrieval metrics.
+- Only embed the vectors the queried mode uses: a `sparse` search no longer pays for a dense
+  round-trip it discards, and `dense` no longer computes a sparse vector.
+
+### Removed
+
+- `Services.retrieval_store()` and the per-mode store cache behind it. They existed to give
+  `dense` and `sparse` their own query views of one physical index; issuing the query directly
+  makes the mode a parameter of the request instead of a property of a cached object.
+
+### Fixed
+
 - Catch the documentation up with 0.5.x. The architecture overview still described the restore that
   0.5.0 replaced — an adjacent scratch directory and an atomic rename — which was the one stale
   line that contradicted the code rather than merely aging. The README promised OCR "deferred to
