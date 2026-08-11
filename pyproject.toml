@@ -21,14 +21,14 @@ classifiers = [
 dependencies = [
     "fastapi>=0.141,<1.0",
     "uvicorn[standard]>=0.52.1",
-    "pydantic-settings>=2.14",
+    "pydantic-settings>=2.15.0",
     "python-multipart>=0.0.20",
     "langchain-core>=1.5,<2",
-    "langchain-openai>=1.4,<2",
+    "langchain-openai>=1.4.2,<2",
     "langchain-ollama>=1.1,<2",
     "langchain-qdrant>=1.1,<2",
     "langchain-text-splitters>=1.1,<2",
-    "qdrant-client[fastembed]>=1.18",
+    "qdrant-client[fastembed]>=1.19.0",
     "pypdf>=6.15",
     "python-docx>=1.1,<2",
     "selectolax>=0.4.11,<0.5",
@@ -36,7 +36,7 @@ dependencies = [
 
 [project.optional-dependencies]
 rerank = [
-    "sentence-transformers>=5.1,<6",
+    "sentence-transformers>=5.7.0,<6",
 ]
 
 [project.urls]
@@ -52,7 +52,7 @@ dev = [
     "pytest>=8.4",
     "pytest-asyncio>=1.0",
     "httpx2>=2.7",
-    "ruff>=0.14",
+    "ruff>=0.16.2",
     "mypy>=1.18",
     "pip-audit>=2.9",
     "pytest-cov>=6,<8",
