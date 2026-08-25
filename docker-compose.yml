@@ -109,7 +109,7 @@ services:
   #   docker compose exec ollama ollama pull qwen3.5:4b
   #   docker compose exec ollama ollama pull embeddinggemma
   ollama:
-    image: ollama/ollama:0.32.5@sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131
+    image: ollama/ollama:0.32.15@sha256:57d60e686821ea81a7748a3ec8141308c8b8f95b27105713954abf7a6529e700
     profiles: ["ollama"]
     volumes:
       - ollama_models:/root/.ollama
