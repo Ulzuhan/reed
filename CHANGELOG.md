@@ -17,6 +17,14 @@ fixes.
   `pkg_resources`, setuptools, wheel and the bundled `ensurepip` archives, and the build fails if
   `pip` survives.
 
+### Changed
+
+- Refresh the pinned dependency set in one sweep: uvicorn 0.52.3, pydantic-settings 2.15,
+  langchain-core 1.5.5, langchain-openai 1.5.1, qdrant-client 1.19, pypdf 6.16.1,
+  sentence-transformers 5.7, httpx2 2.10, and the development tooling to ruff 0.16.3, mypy 2.3.1
+  and pytest-playwright 0.9. The mypy major is the one worth naming: `--strict` over `src` and
+  `tests` still passes without a single suppression.
+
 ### Fixed
 
 - Catch the documentation up with 0.5.x. The architecture overview still described the restore that
