@@ -115,7 +115,7 @@ REED_PROFILE=local docker compose up -d --wait
 ```
 
 The image is published for `linux/amd64` and `linux/arm64`. Pin
-`ghcr.io/ulzuhan/reed:0.5.1` or its digest for reproducible deployments. Compose binds the API to
+`ghcr.io/ulzuhan/reed:0.6.0` or its digest for reproducible deployments. Compose binds the API to
 loopback, uses a read-only root filesystem, drops capabilities, enables `no-new-privileges`, and
 sizes `/tmp` to 256 MiB by default. The upload spool and Reed's staged file coexist for every
 upload in flight, so keep `REED_TMPFS_SIZE` above roughly `2 × REED_MAX_UPLOAD_MB ×

@@ -6,6 +6,8 @@ fixes.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-26
+
 ### Security
 
 - Stop shipping pip in the runtime image. Reed runs from its own virtual environment and installs
@@ -380,7 +382,8 @@ local cross-encoder reranking), a fully local profile via Ollama, SSE streaming 
 ahead of the first token, a built-in golden-set evaluation suite, and an embedded-Qdrant mode
 that runs without Docker.
 
-[Unreleased]: https://github.com/Ulzuhan/reed/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/Ulzuhan/reed/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Ulzuhan/reed/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/Ulzuhan/reed/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Ulzuhan/reed/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/Ulzuhan/reed/compare/v0.4.0...v0.4.1
