@@ -168,6 +168,19 @@ Uploads are idempotent by content SHA-256. Reed validates body and document limi
 work, parses in a spawned process with wall-clock and Linux resource limits, embeds outside the
 Qdrant lock, and publishes chunks only after the complete batch commits.
 
+## Use it from an AI assistant
+
+[`reed-mcp`](https://github.com/Ulzuhan/reed-mcp) exposes a running Reed to any
+[MCP](https://modelcontextprotocol.io) host — Claude Desktop, Claude Code — as four read-only
+tools. The assistant retrieves through `/v1/search` and writes the cited answer with its own
+model; documents, questions and retrieval all stay on the machine.
+
+```bash
+claude mcp add reed -- uvx --from git+https://github.com/Ulzuhan/reed-mcp@v0.1.0 reed-mcp
+```
+
+It needs Reed 0.5.0 or newer, which is where `/v1/search` first shipped.
+
 ## Safe index changes
 
 The collection fingerprint includes dense model name, immutable digest/revision, quantization,
@@ -278,7 +291,7 @@ Every setting is a `REED_*` environment variable or a line in `.env`; see
 | `REED_MAX_CONCURRENT_SEARCHES` | `16` | Retrieval threads for `/v1/search`, separate from the pool uploads and `/v1/ask` draw on |
 | `REED_SEARCH_RATE_LIMIT_PER_MINUTE` | `120` | Per-client budget for `/v1/search` |
 | `REED_MAX_UPLOAD_MB` | `25` | Enforced at stream and staging layers |
-| `REED_API_KEY` | empty | Requires `X-API-Key` on protected endpoints when set |
+| `REED_API_KEY` | empty | Requires `X-API-Key` on protected endpoints when set, and stops the deployment from naming its version, profile and models |
 | `REED_DATA_DIR` | `./data` | Registry, uploads and embedded Qdrant; created `0700` |
 
 ## Operations and security

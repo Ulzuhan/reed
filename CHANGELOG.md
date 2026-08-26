@@ -6,6 +6,62 @@ fixes.
 
 ## [Unreleased]
 
+### Security
+
+- Stop shipping pip in the runtime image. Reed runs from its own virtual environment and installs
+  nothing once the image is built, but the interpreter layer still carried pip — and pip carries
+  its dependencies vendored: `pip/_vendor/vendor.txt` pins msgpack 1.1.2 and setuptools 70.3.0,
+  which is exactly where the two HIGH advisories the image scan reported, GHSA-6v7p-g79w-8964 and
+  CVE-2025-47273, were coming from. Reed's own lockfile resolves fixed versions of both, so no
+  dependency bump of Reed's could ever have cleared them. The runtime stage now removes pip,
+  `pkg_resources`, setuptools, wheel and the bundled `ensurepip` archives, and the build fails if
+  `pip` survives.
+- Keep the version out of the OpenAPI schema when an API key is configured. `/health` and `/ready`
+  have always redacted the version, profile and model names on a keyed deployment, but
+  `/openapi.json` and `/docs` sit outside `/v1` and need no key, so one curl published what the
+  other withheld — and a version string is the single most useful input for matching a deployment
+  against a published advisory. The schema now reads the same switch as the health endpoints,
+  which is a new `Settings.discloses_deployment_details`, so the two cannot drift apart again. The
+  schema itself stays public: it describes the contract, not the deployment.
+
+### Changed
+
+- Refresh the pinned dependency set in one sweep: uvicorn 0.52.3, pydantic-settings 2.15,
+  langchain-core 1.5.5, langchain-openai 1.5.1, qdrant-client 1.19, pypdf 6.16.1,
+  sentence-transformers 5.7, httpx2 2.10, and the development tooling to ruff 0.16.3, mypy 2.3.1
+  and pytest-playwright 0.9. The mypy major is the one worth naming: `--strict` over `src` and
+  `tests` still passes without a single suppression.
+
+### Fixed
+
+- Embed the query outside the embedded-Qdrant lock. Retrieval delegated the whole search to
+  `langchain-qdrant`, which embeds the query inside the call — so the provider round-trip ran while
+  the process-global vector lock was held, and every concurrent `/v1/ask`, every `/v1/search` and
+  every ingestion commit waited on it. The lock now covers only the database call, matching what
+  the ingestion path already did. Reed builds the Qdrant request itself; it is deliberately the
+  same request as before, down to the RRF fusion and the per-branch prefetch limit, because the
+  calibrated evidence threshold is a number in that fused score domain. A new integration test
+  pins the two implementations together, and the shipped evaluation returns byte-identical
+  retrieval metrics.
+- Only embed the vectors the queried mode uses: a `sparse` search no longer pays for a dense
+  round-trip it discards, and `dense` no longer computes a sparse vector.
+
+### Removed
+
+- `Services.retrieval_store()` and the per-mode store cache behind it. They existed to give
+  `dense` and `sparse` their own query views of one physical index; issuing the query directly
+  makes the mode a parameter of the request instead of a property of a cached object.
+
+### Fixed
+
+- Heartbeat an SSE stream while it waits for a slot on `REED_MAX_CONCURRENT_ASKS`. The stream
+  emits its `meta` event before acquiring the semaphore, so past the concurrency limit a caller
+  received `200 OK`, one event, and then nothing at all — no ping — for as long as the request it
+  was queued behind, up to twice `REED_PROVIDER_TIMEOUT_SECONDS`. A reverse proxy drops an idle
+  response long before that, turning backpressure into a stream that opened and silently died. The
+  wait now pings on the same interval the token loop uses, and a stream abandoned while queued
+  releases the slot it was waiting for instead of stranding it.
+
 ### Fixed
 
 - Reduce an uploaded filename the same way on every platform. The sanitiser used `Path(...).name`,
