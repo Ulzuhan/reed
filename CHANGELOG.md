@@ -16,6 +16,13 @@ fixes.
   dependency bump of Reed's could ever have cleared them. The runtime stage now removes pip,
   `pkg_resources`, setuptools, wheel and the bundled `ensurepip` archives, and the build fails if
   `pip` survives.
+- Keep the version out of the OpenAPI schema when an API key is configured. `/health` and `/ready`
+  have always redacted the version, profile and model names on a keyed deployment, but
+  `/openapi.json` and `/docs` sit outside `/v1` and need no key, so one curl published what the
+  other withheld — and a version string is the single most useful input for matching a deployment
+  against a published advisory. The schema now reads the same switch as the health endpoints,
+  which is a new `Settings.discloses_deployment_details`, so the two cannot drift apart again. The
+  schema itself stays public: it describes the contract, not the deployment.
 
 ### Changed
 

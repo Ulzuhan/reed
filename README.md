@@ -291,7 +291,7 @@ Every setting is a `REED_*` environment variable or a line in `.env`; see
 | `REED_MAX_CONCURRENT_SEARCHES` | `16` | Retrieval threads for `/v1/search`, separate from the pool uploads and `/v1/ask` draw on |
 | `REED_SEARCH_RATE_LIMIT_PER_MINUTE` | `120` | Per-client budget for `/v1/search` |
 | `REED_MAX_UPLOAD_MB` | `25` | Enforced at stream and staging layers |
-| `REED_API_KEY` | empty | Requires `X-API-Key` on protected endpoints when set |
+| `REED_API_KEY` | empty | Requires `X-API-Key` on protected endpoints when set, and stops the deployment from naming its version, profile and models |
 | `REED_DATA_DIR` | `./data` | Registry, uploads and embedded Qdrant; created `0700` |
 
 ## Operations and security

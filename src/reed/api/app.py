@@ -67,11 +67,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             services.close()
             logger.info("Reed stopped")
 
+    # `/openapi.json` and `/docs` sit outside `/v1`, so no key is needed to
+    # read them — they describe the contract, which is public by design. The
+    # deployment's version is not part of that contract, and publishing it here
+    # made the redaction in `/health` meaningless: one curl answered what the
+    # other refused.
+    discloses_details = services.settings.discloses_deployment_details
     app = FastAPI(
         title="Reed",
         summary="Reed has read your documents.",
         description=DESCRIPTION,
-        version=__version__,
+        version=__version__ if discloses_details else "unspecified",
         lifespan=lifespan,
     )
     # Available before startup too, so tests and tooling can reach it directly.
