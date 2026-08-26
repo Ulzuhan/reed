@@ -1,6 +1,6 @@
 [project]
 name = "reed"
-version = "0.5.1"
+version = "0.6.0"
 description = "Self-hosted RAG service: upload documents, ask questions, get cited answers."
 readme = "README.md"
 requires-python = ">=3.11"
