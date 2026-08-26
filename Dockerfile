@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 
-FROM python:3.14.6-slim-bookworm@sha256:4c92ffcde4dd6f1ff72a24518f49fd4990b27134987dfa31a733badde66df9f8 AS builder
+FROM python:3.14.7-slim-bookworm@sha256:23c59390fc717bf09f9336908199a0ae75d9c4264bf296123f94ad772fea3b52 AS builder
 
 COPY --from=docker.io/astral/uv:0.12.1@sha256:cf4eedcaa81655197f625739489effcbe71b61ceb1506f332c3facae5deceded /uv /uvx /bin/
 
@@ -21,12 +21,27 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
 
-FROM python:3.14.6-slim-bookworm@sha256:4c92ffcde4dd6f1ff72a24518f49fd4990b27134987dfa31a733badde66df9f8
+FROM python:3.14.7-slim-bookworm@sha256:23c59390fc717bf09f9336908199a0ae75d9c4264bf296123f94ad772fea3b52
 
 RUN useradd --create-home --uid 1000 reed
 
 WORKDIR /app
 COPY --from=builder --chown=reed:reed /app /app
+
+# Reed runs from /app/.venv and installs nothing at runtime, so pip is surface
+# with no use — and pip vendors its dependencies, which makes their advisories
+# the image's: pip/_vendor/vendor.txt pins msgpack 1.1.2 and setuptools 70.3.0,
+# the two HIGH findings the scan gate rejects, while Reed's own lockfile
+# resolves the fixed versions of both. Dropping pip keeps the image scan about
+# the dependencies Reed actually chose.
+RUN set -eux; \
+    site="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"; \
+    rm -rf "$site"/pip "$site"/pip-*.dist-info \
+           "$site"/setuptools "$site"/setuptools-*.dist-info \
+           "$site"/pkg_resources "$site"/wheel "$site"/wheel-*.dist-info \
+           /usr/local/lib/python3.*/ensurepip/_bundled; \
+    rm -f /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.*; \
+    ! command -v pip
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \

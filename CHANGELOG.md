@@ -6,6 +6,32 @@ fixes.
 
 ## [Unreleased]
 
+### Security
+
+- Stop shipping pip in the runtime image. Reed runs from its own virtual environment and installs
+  nothing once the image is built, but the interpreter layer still carried pip — and pip carries
+  its dependencies vendored: `pip/_vendor/vendor.txt` pins msgpack 1.1.2 and setuptools 70.3.0,
+  which is exactly where the two HIGH advisories the image scan reported, GHSA-6v7p-g79w-8964 and
+  CVE-2025-47273, were coming from. Reed's own lockfile resolves fixed versions of both, so no
+  dependency bump of Reed's could ever have cleared them. The runtime stage now removes pip,
+  `pkg_resources`, setuptools, wheel and the bundled `ensurepip` archives, and the build fails if
+  `pip` survives.
+- Keep the version out of the OpenAPI schema when an API key is configured. `/health` and `/ready`
+  have always redacted the version, profile and model names on a keyed deployment, but
+  `/openapi.json` and `/docs` sit outside `/v1` and need no key, so one curl published what the
+  other withheld — and a version string is the single most useful input for matching a deployment
+  against a published advisory. The schema now reads the same switch as the health endpoints,
+  which is a new `Settings.discloses_deployment_details`, so the two cannot drift apart again. The
+  schema itself stays public: it describes the contract, not the deployment.
+
+### Changed
+
+- Refresh the pinned dependency set in one sweep: uvicorn 0.52.3, pydantic-settings 2.15,
+  langchain-core 1.5.5, langchain-openai 1.5.1, qdrant-client 1.19, pypdf 6.16.1,
+  sentence-transformers 5.7, httpx2 2.10, and the development tooling to ruff 0.16.3, mypy 2.3.1
+  and pytest-playwright 0.9. The mypy major is the one worth naming: `--strict` over `src` and
+  `tests` still passes without a single suppression.
+
 ### Fixed
 
 - Embed the query outside the embedded-Qdrant lock. Retrieval delegated the whole search to
