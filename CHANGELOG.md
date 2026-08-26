@@ -6,6 +6,17 @@ fixes.
 
 ## [Unreleased]
 
+### Security
+
+- Stop shipping pip in the runtime image. Reed runs from its own virtual environment and installs
+  nothing once the image is built, but the interpreter layer still carried pip — and pip carries
+  its dependencies vendored: `pip/_vendor/vendor.txt` pins msgpack 1.1.2 and setuptools 70.3.0,
+  which is exactly where the two HIGH advisories the image scan reported, GHSA-6v7p-g79w-8964 and
+  CVE-2025-47273, were coming from. Reed's own lockfile resolves fixed versions of both, so no
+  dependency bump of Reed's could ever have cleared them. The runtime stage now removes pip,
+  `pkg_resources`, setuptools, wheel and the bundled `ensurepip` archives, and the build fails if
+  `pip` survives.
+
 ### Fixed
 
 - Catch the documentation up with 0.5.x. The architecture overview still described the restore that
