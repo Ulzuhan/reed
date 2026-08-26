@@ -144,6 +144,18 @@ class Settings(BaseSettings):
     # documented source of truth and parity tests can prevent drift.
     tmpfs_size: str = "64m"
 
+    @property
+    def discloses_deployment_details(self) -> bool:
+        """Whether responses may name the version, profile and models.
+
+        A configured API key is the signal that this deployment is not a public
+        demo, so it stops advertising what it runs. Every surface that could
+        answer the question reads this one property: `/health`, `/ready` and
+        the OpenAPI schema, which used to publish the version the health
+        endpoints were busy withholding.
+        """
+        return not bool(self.api_key)
+
     # --- Evaluation -----------------------------------------------------
     eval_judge_profile: Profile = "openai"
     eval_judge_model: str = ""

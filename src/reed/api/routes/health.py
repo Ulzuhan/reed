@@ -113,7 +113,7 @@ def _response(
     documents: int | None,
 ) -> HealthResponse:
     settings = services.settings
-    disclose_details = not bool(settings.api_key)
+    disclose_details = settings.discloses_deployment_details
     return HealthResponse(
         status=health_status,
         version=__version__ if disclose_details else None,
