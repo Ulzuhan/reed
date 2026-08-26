@@ -27,8 +27,13 @@ logger = get_logger(__name__)
 
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
-DOC_ID_PAYLOAD_KEY = "metadata.doc_id"
-COMMITTED_PAYLOAD_KEY = "metadata.committed"
+# langchain-qdrant's default payload layout. Ingestion writes it by hand and
+# retrieval reads it by hand, so both ends name it from here rather than
+# restating the strings and drifting apart.
+CONTENT_PAYLOAD_KEY = "page_content"
+METADATA_PAYLOAD_KEY = "metadata"
+DOC_ID_PAYLOAD_KEY = f"{METADATA_PAYLOAD_KEY}.doc_id"
+COMMITTED_PAYLOAD_KEY = f"{METADATA_PAYLOAD_KEY}.committed"
 COLLECTION_SCHEMA_VERSION = 5
 
 

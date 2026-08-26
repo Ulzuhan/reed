@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from reed import __version__
+from reed.api.app import create_app
 from reed.config import Settings
 from reed.services import Services
 
@@ -27,6 +29,31 @@ def test_openapi_schema_is_generated(client: TestClient) -> None:
     assert schema["info"]["title"] == "Reed"
     assert "/health" in schema["paths"]
     assert "/ready" in schema["paths"]
+    assert schema["info"]["version"] == __version__
+
+
+def test_a_keyed_deployment_publishes_its_version_nowhere(tmp_path: Path) -> None:
+    """The schema has to agree with `/health` about naming the deployment.
+
+    `/openapi.json` needs no key, so a version published there is public
+    however carefully the health endpoints redact theirs. The assertion is the
+    property — the string appears nowhere in the document — rather than the
+    one field, because the point is that nothing leaks it.
+    """
+    keyed = Settings(
+        profile="fake",
+        data_dir=tmp_path / "data",
+        collection="test_chunks",
+        api_key="s3cret",
+        _env_file=None,
+    )
+    # No lifespan: the schema is served before startup, and this test has no
+    # business booting a vector store to read it.
+    schema = TestClient(create_app(keyed)).get("/openapi.json").json()
+
+    assert schema["info"]["title"] == "Reed"
+    assert schema["info"]["version"] == "unspecified"
+    assert __version__ not in json.dumps(schema)
 
 
 def test_ui_responses_have_a_content_security_policy(client: TestClient) -> None:

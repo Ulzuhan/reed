@@ -12,13 +12,22 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
 
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    groups:
+      base-images:
+        patterns: ["*"]
 
   - package-ecosystem: docker-compose
     directory: /
     schedule:
       interval: weekly
+    groups:
+      compose-images:
+        patterns: ["*"]
