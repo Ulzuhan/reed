@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -15,6 +16,11 @@ if TYPE_CHECKING:
     from reed.services import Services
 
 MEBIBYTE = 1024 * 1024
+
+# How long an upload waits for a spool slot before it is refused. Long enough to
+# absorb a browser dropping several files at once, short enough that a client
+# learns the server is saturated instead of holding a connection open on hope.
+UPLOAD_SLOT_WAIT_SECONDS = 5.0
 
 
 class RequestBodyTooLarge(Exception):
@@ -100,6 +106,27 @@ class RequestGuardMiddleware:
                 )
                 return
 
+        if not _is_document_upload(method, path):
+            await self._serve_within_body_limit(scope, receive, send, body_limit, path)
+            return
+
+        # Two copies of an upload live on disk at once: the multipart parser
+        # spools the body inside the call below, before any route code runs,
+        # and the route then stages its own copy for hashing. Under the shipped
+        # Compose file both land on a small /tmp tmpfs, and nothing bounded how
+        # many could be in flight — the queue-depth check in the route happens
+        # after the first copy already exists, and the rate limit is a rate,
+        # not a concurrency. This is the only place early enough to bound it.
+        if not await self._reserve_spool_slot(send):
+            return
+        try:
+            await self._serve_within_body_limit(scope, receive, send, body_limit, path)
+        finally:
+            self.services.upload_access.release()
+
+    async def _serve_within_body_limit(
+        self, scope: Scope, receive: Receive, send: Send, body_limit: int, path: str
+    ) -> None:
         state = _ReceiveState()
 
         async def limited_receive() -> Message:
@@ -123,6 +150,31 @@ class RequestGuardMiddleware:
 
         if state.too_large:
             await _json_error(413, self._limit_message(path), send)
+
+    async def _reserve_spool_slot(self, send: Send) -> bool:
+        """Hold one of ``REED_MAX_CONCURRENT_UPLOADS`` spool slots, or refuse.
+
+        A short wait rather than an immediate refusal: a caller queued here is
+        not yet using any disk, and a brief queue is a better answer than a 503
+        for the burst that a browser multi-file drop produces. Past that it
+        refuses the way a full ingestion queue does, because the alternative is
+        ``ENOSPC`` — which fails whichever upload happens to be writing, not the
+        one that overflowed.
+        """
+        try:
+            await asyncio.wait_for(
+                self.services.upload_access.acquire(), timeout=UPLOAD_SLOT_WAIT_SECONDS
+            )
+        except TimeoutError:
+            self.services.metrics.increment("upload_rejections_total")
+            await _json_error(
+                503,
+                "Too many uploads are in flight; retry shortly",
+                send,
+                headers={"Retry-After": "2"},
+            )
+            return False
+        return True
 
     def _rate_limit(self, method: str, path: str) -> tuple[str, int] | None:
         settings = self.services.settings
