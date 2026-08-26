@@ -64,6 +64,18 @@ fixes.
 
 ### Fixed
 
+- Reduce an uploaded filename the same way on every platform. The sanitiser used `Path(...).name`,
+  which on POSIX treats a backslash as an ordinary character — so `..\..\etc\passwd.txt` survived
+  whole. Harmless on Linux and macOS, and the shipped container is Linux, but the result is joined
+  onto `REED_DATA_DIR/uploads`, and on Windows those backslashes are separators again. It now uses
+  `PureWindowsPath`, which splits on both `/` and `\` everywhere, and refuses `.` and `..` outright
+  rather than leaning on the `d-<hash>__` prefix to make them inert.
+- Sanitise in the pipeline rather than trusting the route. `register_upload` re-applied a basename
+  to the name it was given and `register_replacement` did not, so the invariant held only because
+  every HTTP caller happened to have sanitised first — not for the CLI, and not for anything else
+  reaching those functions directly. Both now compose their stored path through the same helper,
+  which moves to `reed.ingest.pipeline.safe_filename`.
+
 - Catch the documentation up with 0.5.x. The architecture overview still described the restore that
   0.5.0 replaced — an adjacent scratch directory and an atomic rename — which was the one stale
   line that contradicted the code rather than merely aging. The README promised OCR "deferred to

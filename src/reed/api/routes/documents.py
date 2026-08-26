@@ -29,6 +29,7 @@ from reed.ingest.pipeline import (
     delete_lineage,
     register_replacement,
     register_upload,
+    safe_filename,
 )
 from reed.ingest.registry import DocumentRecord, NameConflictError
 from reed.log import get_logger
@@ -66,7 +67,7 @@ async def _staged_upload(
     services: ServicesDep, file: UploadFile
 ) -> AsyncIterator[tuple[Path, str]]:
     """Spool an upload to a bounded temporary file, always cleaned up."""
-    filename = _safe_filename(file.filename or "upload")
+    filename = safe_filename(file.filename or "upload")
     try:
         source_type(Path(filename))
     except UnsupportedFileError as exc:
@@ -120,7 +121,7 @@ async def upload_document(
             headers={"Retry-After": "2"},
         )
     async with _staged_upload(services, file) as (staged_path, filename):
-        lineage_name = _safe_filename(name) if name else filename
+        lineage_name = safe_filename(name) if name else filename
         try:
             # Hashing and copying up to REED_MAX_UPLOAD_MB is blocking work,
             # so it runs off the event loop. The registry claims the display
@@ -359,15 +360,3 @@ def _lineage_or_fail(services: ServicesDep, logical_id: str) -> int:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Document deletion could not be completed; retry the operation",
         ) from exc
-
-
-def _safe_filename(filename: str) -> str:
-    basename = Path(filename).name
-    printable = "".join(character for character in basename if character.isprintable())
-    if not printable:
-        return "upload"
-    if len(printable) <= 255:
-        return printable
-    suffix = Path(printable).suffix[:20]
-    stem_limit = 255 - len(suffix)
-    return f"{Path(printable).stem[:stem_limit]}{suffix}"

@@ -574,3 +574,45 @@ def test_deleting_a_lineage_removes_every_version(client: TestClient, tmp_path: 
     assert client.delete(f"/v1/documents/{logical_id}").status_code == 204
     assert client.get(f"/v1/documents/{logical_id}/versions").status_code == 404
     assert client.get("/v1/documents").json()["total"] == 0
+
+
+def test_a_hostile_filename_cannot_place_a_stored_original_outside_uploads(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """The pipeline defends itself rather than trusting whoever called it.
+
+    The upload route sanitises, so this shape never arrived through HTTP — but
+    `register_upload` and `register_replacement` are also reached from the CLI
+    and from tests, and only one of them re-applied a basename. An invariant
+    that holds because of the caller is not an invariant.
+    """
+    services = build_services(settings)
+    try:
+        source = tmp_path / "policy.md"
+        source.write_text("# Policy\n\nThe launch code is ORCHID.", encoding="utf-8")
+
+        record, duplicate = register_upload(
+            services, source=source, filename="..\\..\\etc\\passwd.md"
+        )
+
+        assert not duplicate
+        stored = Path(record.stored_path or "")
+        assert stored.parent == settings.uploads_dir
+        assert "\\" not in stored.name
+        assert stored.is_file()
+
+        replacement = tmp_path / "policy-v2.md"
+        replacement.write_text("# Policy\n\nThe launch code is FERN.", encoding="utf-8")
+        second = register_replacement(
+            services,
+            logical_id=record.logical_id,
+            source=replacement,
+            filename="..\\..\\etc\\shadow.md",
+        )
+
+        replaced = Path(second.stored_path or "")
+        assert replaced.parent == settings.uploads_dir
+        assert "\\" not in replaced.name
+        assert replaced.is_file()
+    finally:
+        services.close()

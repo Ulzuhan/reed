@@ -12,7 +12,7 @@ import hashlib
 import shutil
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING
 
 from qdrant_client import models
@@ -71,6 +71,34 @@ def point_id_for(sha256: str, chunk_index: int) -> str:
     return str(uuid.uuid5(POINT_NAMESPACE, f"{sha256}:{chunk_index}"))
 
 
+def safe_filename(filename: str) -> str:
+    """Reduce a caller-supplied name to something safe to join onto a directory.
+
+    ``PureWindowsPath`` rather than ``Path``: it splits on both ``/`` and ``\\``
+    on every platform, so the answer does not depend on the host. ``Path`` on
+    POSIX treats a backslash as an ordinary character, which left
+    ``..\\..\\etc\\passwd.txt`` intact — harmless there, but this result is
+    joined onto ``uploads_dir``, and on Windows those backslashes are separators
+    again. A name is data; it should not be able to pick the directory.
+
+    Names are also stripped of unprintable characters and capped at 255 bytes,
+    which is the limit on every filesystem Reed is likely to meet.
+    """
+    basename = PureWindowsPath(filename).name
+    printable = "".join(character for character in basename if character.isprintable())
+    # `.name` keeps "." and ".." — they are the last component, after all. Both
+    # are harmless once the `d-<hash>__` prefix is in front of them, but that
+    # makes the prefix load-bearing for safety, which is the arrangement this
+    # function exists to end.
+    if not printable or printable in {".", ".."}:
+        return "upload"
+    if len(printable) <= 255:
+        return printable
+    suffix = PureWindowsPath(printable).suffix[:20]
+    stem_limit = 255 - len(suffix)
+    return f"{PureWindowsPath(printable).stem[:stem_limit]}{suffix}"
+
+
 def register_upload(
     services: Services,
     *,
@@ -96,7 +124,7 @@ def register_upload(
     stored_path = source
     if copy:
         services.settings.uploads_dir.mkdir(parents=True, exist_ok=True, mode=DATA_DIR_MODE)
-        stored_path = services.settings.uploads_dir / f"{doc_id}__{Path(filename).name}"
+        stored_path = services.settings.uploads_dir / f"{doc_id}__{safe_filename(filename)}"
 
     record, duplicate = services.registry.claim_upload(
         doc_id=doc_id,
@@ -150,7 +178,9 @@ def register_replacement(
         filename=filename,
         sha256=sha256,
         size_bytes=source.stat().st_size,
-        stored_path=str(services.settings.uploads_dir / f"{document_id_for(sha256)}__{filename}"),
+        stored_path=str(
+            services.settings.uploads_dir / f"{document_id_for(sha256)}__{safe_filename(filename)}"
+        ),
         logical_id=logical_id,
     )
     services.settings.uploads_dir.mkdir(parents=True, exist_ok=True, mode=DATA_DIR_MODE)
