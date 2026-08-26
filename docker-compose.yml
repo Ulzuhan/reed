@@ -65,6 +65,7 @@ services:
       - REED_MAX_OUTPUT_TOKENS=${REED_MAX_OUTPUT_TOKENS:-1024}
       - REED_MAX_CONCURRENT_ASKS=${REED_MAX_CONCURRENT_ASKS:-8}
       - REED_MAX_CONCURRENT_SEARCHES=${REED_MAX_CONCURRENT_SEARCHES:-16}
+      - REED_MAX_CONCURRENT_UPLOADS=${REED_MAX_CONCURRENT_UPLOADS:-4}
       - REED_MAX_CONCURRENT_INGESTIONS=${REED_MAX_CONCURRENT_INGESTIONS:-2}
       - REED_MAX_QUEUED_INGESTIONS=${REED_MAX_QUEUED_INGESTIONS:-16}
       - REED_ASK_RATE_LIMIT_PER_MINUTE=${REED_ASK_RATE_LIMIT_PER_MINUTE:-60}
@@ -72,7 +73,7 @@ services:
       - REED_SEARCH_RATE_LIMIT_PER_MINUTE=${REED_SEARCH_RATE_LIMIT_PER_MINUTE:-120}
       - REED_SSE_QUEUE_SIZE=${REED_SSE_QUEUE_SIZE:-64}
       - REED_MAX_JSON_BODY_KB=${REED_MAX_JSON_BODY_KB:-128}
-      - REED_TMPFS_SIZE=${REED_TMPFS_SIZE:-64m}
+      - REED_TMPFS_SIZE=${REED_TMPFS_SIZE:-256m}
       - REED_EVAL_JUDGE_PROFILE=${REED_EVAL_JUDGE_PROFILE:-openai}
       - REED_EVAL_JUDGE_MODEL=${REED_EVAL_JUDGE_MODEL:-}
     volumes:
@@ -84,8 +85,9 @@ services:
     init: true
     read_only: true
     tmpfs:
-      # Starlette's upload spool and Reed's staged copy can briefly coexist.
-      - /tmp:size=${REED_TMPFS_SIZE:-64m},mode=1777
+      # Starlette's upload spool and Reed's staged copy coexist for every
+      # upload in flight, which REED_MAX_CONCURRENT_UPLOADS bounds.
+      - /tmp:size=${REED_TMPFS_SIZE:-256m},mode=1777
     security_opt:
       - no-new-privileges:true
     cap_drop:

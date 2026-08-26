@@ -24,6 +24,18 @@ fixes.
   which is a new `Settings.discloses_deployment_details`, so the two cannot drift apart again. The
   schema itself stays public: it describes the contract, not the deployment.
 
+### Added
+
+- `REED_MAX_CONCURRENT_UPLOADS` (default 4): how many uploads may be spooling at once. Each holds
+  two copies on the temporary filesystem — the multipart parser's and Reed's staged one — and
+  nothing bounded how many could be in flight, so two concurrent 25 MB uploads already needed more
+  than the 64 MiB `/tmp` the Compose file shipped. The result was `ENOSPC`, which fails whichever
+  upload happens to be writing rather than the one that overflowed, at well under the documented
+  `REED_MAX_UPLOAD_MB`. Uploads past the bound wait briefly and are then refused with `503` and
+  `Retry-After`, the way a full ingestion queue already is. The Compose `/tmp` default rises from
+  64 MiB to 256 MiB to match the new default, and the sizing rule in the README becomes
+  `2 × REED_MAX_UPLOAD_MB × REED_MAX_CONCURRENT_UPLOADS`.
+
 ### Changed
 
 - Refresh the pinned dependency set in one sweep: uvicorn 0.52.3, pydantic-settings 2.15,
@@ -45,15 +57,6 @@ fixes.
   retrieval metrics.
 - Only embed the vectors the queried mode uses: a `sparse` search no longer pays for a dense
   round-trip it discards, and `dense` no longer computes a sparse vector.
-
-### Removed
-
-- `Services.retrieval_store()` and the per-mode store cache behind it. They existed to give
-  `dense` and `sparse` their own query views of one physical index; issuing the query directly
-  makes the mode a parameter of the request instead of a property of a cached object.
-
-### Fixed
-
 - Heartbeat an SSE stream while it waits for a slot on `REED_MAX_CONCURRENT_ASKS`. The stream
   emits its `meta` event before acquiring the semaphore, so past the concurrency limit a caller
   received `200 OK`, one event, and then nothing at all — no ping — for as long as the request it
@@ -61,9 +64,6 @@ fixes.
   response long before that, turning backpressure into a stream that opened and silently died. The
   wait now pings on the same interval the token loop uses, and a stream abandoned while queued
   releases the slot it was waiting for instead of stranding it.
-
-### Fixed
-
 - Reduce an uploaded filename the same way on every platform. The sanitiser used `Path(...).name`,
   which on POSIX treats a backslash as an ordinary character — so `..\..\etc\passwd.txt` survived
   whole. Harmless on Linux and macOS, and the shipped container is Linux, but the result is joined
@@ -75,13 +75,18 @@ fixes.
   every HTTP caller happened to have sanitised first — not for the CLI, and not for anything else
   reaching those functions directly. Both now compose their stored path through the same helper,
   which moves to `reed.ingest.pipeline.safe_filename`.
-
 - Catch the documentation up with 0.5.x. The architecture overview still described the restore that
   0.5.0 replaced — an adjacent scratch directory and an atomic rename — which was the one stale
   line that contradicted the code rather than merely aging. The README promised OCR "deferred to
   v0.5" from a v0.5 release, claimed a CI matrix that stops at Python 3.13, and told upgraders to
   install v0.4; the architecture and runbook documents were still stamped v0.4. The configuration
   table also gains the two `/v1/search` controls and notes that `REED_DATA_DIR` is created `0700`.
+
+### Removed
+
+- `Services.retrieval_store()` and the per-mode store cache behind it. They existed to give
+  `dense` and `sparse` their own query views of one physical index; issuing the query directly
+  makes the mode a parameter of the request instead of a property of a cached object.
 
 ## [0.5.1] - 2026-08-09
 

@@ -132,6 +132,11 @@ class Settings(BaseSettings):
     # than asks — but a bound, and one of its own: see `Services.search_access`.
     max_concurrent_searches: int = Field(default=16, ge=1, le=100)
     max_concurrent_ingestions: int = Field(default=2, ge=1, le=32)
+    # Uploads spooled at once. Each holds two copies on the temporary
+    # filesystem — the multipart parser's and Reed's staged one — so the budget
+    # this needs is roughly `2 x max_upload_mb x this`, which is what
+    # REED_TMPFS_SIZE has to cover.
+    max_concurrent_uploads: int = Field(default=4, ge=1, le=64)
     max_queued_ingestions: int = Field(default=16, ge=1, le=1_000)
     ask_rate_limit_per_minute: int = Field(default=60, ge=0, le=10_000)
     upload_rate_limit_per_minute: int = Field(default=20, ge=0, le=10_000)
@@ -142,7 +147,7 @@ class Settings(BaseSettings):
     max_json_body_kb: int = Field(default=128, ge=16, le=1_024)
     # Compose-only sizing knob, kept here so every REED_* setting has one
     # documented source of truth and parity tests can prevent drift.
-    tmpfs_size: str = "64m"
+    tmpfs_size: str = "256m"
 
     @property
     def discloses_deployment_details(self) -> bool:
