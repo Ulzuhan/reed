@@ -12,10 +12,16 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from qdrant_client import models
+from qdrant_client import QdrantClient, models
 
 from reed.log import get_logger
-from reed.rag.vectorstore import COMMITTED_PAYLOAD_KEY
+from reed.rag.vectorstore import (
+    COMMITTED_PAYLOAD_KEY,
+    CONTENT_PAYLOAD_KEY,
+    DENSE_VECTOR_NAME,
+    METADATA_PAYLOAD_KEY,
+    SPARSE_VECTOR_NAME,
+)
 
 if TYPE_CHECKING:
     from reed.services import Services
@@ -23,6 +29,10 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 SNIPPET_CHARS = 220
+
+# Score domains Qdrant can be queried in. `hybrid_rerank` is not one of them:
+# it queries `hybrid` and reorders the result with a cross-encoder.
+QUERY_MODES = frozenset({"dense", "sparse", "hybrid"})
 
 # Heading markers, emphasis and list bullets — noise in a one-line preview.
 _MARKDOWN_SYNTAX = re.compile(r"^\s{0,3}#{1,6}\s+|\*{1,3}|`+|^\s*[-*+]\s+", re.MULTILINE)
@@ -71,21 +81,41 @@ def retrieve(
     fetch_k = max(settings.fetch_k, k) if needs_candidates else k
 
     services.flush_pending_vector_cleanup()
-    store = services.retrieval_store(selected_mode)
+    query_mode = "hybrid" if selected_mode == "hybrid_rerank" else selected_mode
+    # Checked before embedding, not by the query: a bad mode should not cost a
+    # provider round-trip on its way to failing.
+    if query_mode not in QUERY_MODES:
+        raise ValueError(f"unsupported retrieval mode: {selected_mode}")
+    # Resolving the store creates and validates the collection. It happens
+    # before `vector_access` is taken, which the lock order in Services requires.
+    _ = services.vectorstore
+    client = services.qdrant
+    collection_name = services.active_collection_name
+    # Embedding the query is a provider round-trip — tens to hundreds of
+    # milliseconds against a local model, far more against a cold one. With
+    # embedded Qdrant `vector_access` is a process-global lock that ingestion
+    # also needs, so only the database call belongs inside it. This is the same
+    # split `index_record_into` already makes on the write side.
+    dense_vector, sparse_vector = _embed_query(services, query, query_mode)
+    committed_only = models.Filter(
+        must=[
+            models.FieldCondition(
+                key=COMMITTED_PAYLOAD_KEY,
+                match=models.MatchValue(value=True),
+            )
+        ]
+    )
     with services.vector_access:
-        hits = store.similarity_search_with_score(
-            query,
-            k=fetch_k,
-            filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key=COMMITTED_PAYLOAD_KEY,
-                        match=models.MatchValue(value=True),
-                    )
-                ]
-            ),
+        points = _query_points(
+            client,
+            collection_name=collection_name,
+            query_mode=query_mode,
+            dense=dense_vector,
+            sparse=sparse_vector,
+            limit=fetch_k,
+            query_filter=committed_only,
         )
-    chunks = [_to_chunk(document, score) for document, score in hits]
+    chunks = [_to_chunk(point) for point in points]
     # Qdrant publication and SQLite status cannot share a transaction. There is
     # therefore a tiny interval after a point batch is published but before its
     # registry row becomes ready (and the inverse during deletion). Requiring
@@ -209,13 +239,89 @@ def _jaccard(left: set[str], right: set[str]) -> float:
     return len(left & right) / len(union) if union else 0.0
 
 
-def _to_chunk(document: object, score: float) -> RetrievedChunk:
-    metadata: dict[str, object] = getattr(document, "metadata", {}) or {}
+def _embed_query(
+    services: Services, query: str, query_mode: str
+) -> tuple[list[float] | None, models.SparseVector | None]:
+    """Embed the query for ``query_mode``, outside the vector lock.
+
+    Only the vectors the mode actually queries with are computed: a sparse-only
+    search must not pay for a dense round-trip it will not use, and vice versa.
+    """
+    dense = services.embeddings.embed_query(query) if query_mode != "sparse" else None
+    sparse = None
+    if query_mode != "dense":
+        vector = services.sparse_embeddings.embed_query(query)
+        sparse = models.SparseVector(indices=vector.indices, values=vector.values)
+    return dense, sparse
+
+
+def _query_points(
+    client: QdrantClient,
+    *,
+    collection_name: str,
+    query_mode: str,
+    dense: list[float] | None,
+    sparse: models.SparseVector | None,
+    limit: int,
+    query_filter: models.Filter,
+) -> list[models.ScoredPoint]:
+    """Issue the search Reed used to delegate to ``similarity_search_with_score``.
+
+    Deliberately the same request langchain-qdrant builds, down to the RRF
+    fusion and the per-branch prefetch limit: the calibrated evidence threshold
+    is a number in the fused score domain, so a query that ranked differently
+    would silently invalidate it.
+    """
+    # Spelled out per branch rather than splatted from a shared dict: the
+    # keyword types are what mypy checks this call against, and a dict erases
+    # them.
+    if query_mode == "dense":
+        return client.query_points(
+            collection_name=collection_name,
+            query=dense,
+            using=DENSE_VECTOR_NAME,
+            query_filter=query_filter,
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        ).points
+    if query_mode == "sparse":
+        return client.query_points(
+            collection_name=collection_name,
+            query=sparse,
+            using=SPARSE_VECTOR_NAME,
+            query_filter=query_filter,
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        ).points
+    if query_mode != "hybrid":
+        raise ValueError(f"unsupported retrieval mode: {query_mode}")
+    return client.query_points(
+        collection_name=collection_name,
+        prefetch=[
+            models.Prefetch(using=DENSE_VECTOR_NAME, query=dense, filter=query_filter, limit=limit),
+            models.Prefetch(
+                using=SPARSE_VECTOR_NAME, query=sparse, filter=query_filter, limit=limit
+            ),
+        ],
+        query=models.FusionQuery(fusion=models.Fusion.RRF),
+        query_filter=query_filter,
+        limit=limit,
+        with_payload=True,
+        with_vectors=False,
+    ).points
+
+
+def _to_chunk(point: models.ScoredPoint) -> RetrievedChunk:
+    payload: dict[str, object] = point.payload or {}
+    raw_metadata = payload.get(METADATA_PAYLOAD_KEY)
+    metadata: dict[str, object] = raw_metadata if isinstance(raw_metadata, dict) else {}
     page = metadata.get("page")
     chunk_index = metadata.get("chunk_index")
     return RetrievedChunk(
-        text=str(getattr(document, "page_content", "")),
-        score=float(score),
+        text=str(payload.get(CONTENT_PAYLOAD_KEY, "")),
+        score=float(point.score),
         doc_id=str(metadata.get("doc_id", "")),
         filename=str(metadata.get("filename", "unknown")),
         page=int(page) if isinstance(page, int) and not isinstance(page, bool) else None,
