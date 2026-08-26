@@ -16,6 +16,25 @@ fixes.
   dependency bump of Reed's could ever have cleared them. The runtime stage now removes pip,
   `pkg_resources`, setuptools, wheel and the bundled `ensurepip` archives, and the build fails if
   `pip` survives.
+- Keep the version out of the OpenAPI schema when an API key is configured. `/health` and `/ready`
+  have always redacted the version, profile and model names on a keyed deployment, but
+  `/openapi.json` and `/docs` sit outside `/v1` and need no key, so one curl published what the
+  other withheld — and a version string is the single most useful input for matching a deployment
+  against a published advisory. The schema now reads the same switch as the health endpoints,
+  which is a new `Settings.discloses_deployment_details`, so the two cannot drift apart again. The
+  schema itself stays public: it describes the contract, not the deployment.
+
+### Added
+
+- `REED_MAX_CONCURRENT_UPLOADS` (default 4): how many uploads may be spooling at once. Each holds
+  two copies on the temporary filesystem — the multipart parser's and Reed's staged one — and
+  nothing bounded how many could be in flight, so two concurrent 25 MB uploads already needed more
+  than the 64 MiB `/tmp` the Compose file shipped. The result was `ENOSPC`, which fails whichever
+  upload happens to be writing rather than the one that overflowed, at well under the documented
+  `REED_MAX_UPLOAD_MB`. Uploads past the bound wait briefly and are then refused with `503` and
+  `Retry-After`, the way a full ingestion queue already is. The Compose `/tmp` default rises from
+  64 MiB to 256 MiB to match the new default, and the sizing rule in the README becomes
+  `2 × REED_MAX_UPLOAD_MB × REED_MAX_CONCURRENT_UPLOADS`.
 
 ### Changed
 
@@ -27,12 +46,47 @@ fixes.
 
 ### Fixed
 
+- Embed the query outside the embedded-Qdrant lock. Retrieval delegated the whole search to
+  `langchain-qdrant`, which embeds the query inside the call — so the provider round-trip ran while
+  the process-global vector lock was held, and every concurrent `/v1/ask`, every `/v1/search` and
+  every ingestion commit waited on it. The lock now covers only the database call, matching what
+  the ingestion path already did. Reed builds the Qdrant request itself; it is deliberately the
+  same request as before, down to the RRF fusion and the per-branch prefetch limit, because the
+  calibrated evidence threshold is a number in that fused score domain. A new integration test
+  pins the two implementations together, and the shipped evaluation returns byte-identical
+  retrieval metrics.
+- Only embed the vectors the queried mode uses: a `sparse` search no longer pays for a dense
+  round-trip it discards, and `dense` no longer computes a sparse vector.
+- Heartbeat an SSE stream while it waits for a slot on `REED_MAX_CONCURRENT_ASKS`. The stream
+  emits its `meta` event before acquiring the semaphore, so past the concurrency limit a caller
+  received `200 OK`, one event, and then nothing at all — no ping — for as long as the request it
+  was queued behind, up to twice `REED_PROVIDER_TIMEOUT_SECONDS`. A reverse proxy drops an idle
+  response long before that, turning backpressure into a stream that opened and silently died. The
+  wait now pings on the same interval the token loop uses, and a stream abandoned while queued
+  releases the slot it was waiting for instead of stranding it.
+- Reduce an uploaded filename the same way on every platform. The sanitiser used `Path(...).name`,
+  which on POSIX treats a backslash as an ordinary character — so `..\..\etc\passwd.txt` survived
+  whole. Harmless on Linux and macOS, and the shipped container is Linux, but the result is joined
+  onto `REED_DATA_DIR/uploads`, and on Windows those backslashes are separators again. It now uses
+  `PureWindowsPath`, which splits on both `/` and `\` everywhere, and refuses `.` and `..` outright
+  rather than leaning on the `d-<hash>__` prefix to make them inert.
+- Sanitise in the pipeline rather than trusting the route. `register_upload` re-applied a basename
+  to the name it was given and `register_replacement` did not, so the invariant held only because
+  every HTTP caller happened to have sanitised first — not for the CLI, and not for anything else
+  reaching those functions directly. Both now compose their stored path through the same helper,
+  which moves to `reed.ingest.pipeline.safe_filename`.
 - Catch the documentation up with 0.5.x. The architecture overview still described the restore that
   0.5.0 replaced — an adjacent scratch directory and an atomic rename — which was the one stale
   line that contradicted the code rather than merely aging. The README promised OCR "deferred to
   v0.5" from a v0.5 release, claimed a CI matrix that stops at Python 3.13, and told upgraders to
   install v0.4; the architecture and runbook documents were still stamped v0.4. The configuration
   table also gains the two `/v1/search` controls and notes that `REED_DATA_DIR` is created `0700`.
+
+### Removed
+
+- `Services.retrieval_store()` and the per-mode store cache behind it. They existed to give
+  `dense` and `sparse` their own query views of one physical index; issuing the query directly
+  makes the mode a parameter of the request instead of a property of a cached object.
 
 ## [0.5.1] - 2026-08-09
 

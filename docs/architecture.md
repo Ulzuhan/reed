@@ -103,8 +103,13 @@ Each Qdrant collection has two named vectors:
 | `dense` | configured embedding model | semantic/paraphrase retrieval |
 | `sparse` | FastEmbed `Qdrant/bm25` | lexical/exact-term retrieval |
 
-The index always stores both representations. Query views select `dense`, `sparse`, `hybrid` or
-`hybrid_rerank` without rebuilding. Hybrid uses Qdrant Reciprocal Rank Fusion. Retrieval then:
+The index always stores both representations. A query selects `dense`, `sparse`, `hybrid` or
+`hybrid_rerank` without rebuilding. Hybrid uses Qdrant Reciprocal Rank Fusion. Reed builds that
+request itself rather than delegating it, so the query's embedding round-trip happens *before* the
+embedded-Qdrant lock is taken and only the database call holds it — the same split ingestion makes
+on the write side. The request is deliberately identical to the one `langchain-qdrant` issued,
+down to the fusion and the per-branch prefetch limit, because the evidence threshold below is
+calibrated in the fused score domain; an integration test pins the two together. Retrieval then:
 
 1. removes chunks whose documents are not ready;
 2. optionally reranks a larger candidate set through an isolated adapter;
@@ -135,8 +140,11 @@ SourcesEvent → TokenEvent* → DoneEvent
                          ↘ ErrorEvent
 ```
 
-Retrieval and reranking run in worker threads. SSE uses a bounded queue and heartbeat comments;
-stopping the client cancels generation cooperatively. Final citation auditing checks source range,
+Retrieval and reranking run in worker threads. SSE uses a bounded queue and heartbeat comments —
+including while the stream is queued behind `REED_MAX_CONCURRENT_ASKS`, because the response and
+its `meta` event are already committed by then and a silent stream is one a reverse proxy drops.
+Stopping the client cancels generation cooperatively, and a stream abandoned mid-queue gives back
+the slot it was waiting for. Final citation auditing checks source range,
 sentence coverage, cited numbers and verbatim quotes and exposes warnings to both API and UI.
 
 ## Evaluation

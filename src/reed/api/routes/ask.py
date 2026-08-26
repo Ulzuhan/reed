@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -57,7 +57,7 @@ def _render(event: StreamEvent) -> str:
     return sse_event("error", {"message": event.message})
 
 
-async def _sse_body(services: Services, request: AskRequest) -> AsyncIterator[str]:
+async def _sse_body(services: Services, request: AskRequest) -> AsyncGenerator[str, None]:
     request_id = f"r-{uuid.uuid4().hex[:12]}"
     yield sse_event(
         "meta",
@@ -101,7 +101,22 @@ async def _sse_body(services: Services, request: AskRequest) -> AsyncIterator[st
             else:
                 await queue.put(_STREAM_END)
 
-    async with services.ask_access:
+    # Backpressure must not look like a dead connection. Past
+    # `max_concurrent_asks` the caller waits here, for up to as long as the
+    # request it is queued behind — far longer than the idle timeout of the
+    # reverse proxy the deployment guidance puts in front of Reed. So the wait
+    # heartbeats, exactly as the token loop below does once a slot is held.
+    # `asyncio.wait` is what makes that possible: unlike `wait_for` it reports
+    # a timeout without cancelling the thing it waited on, so the place in the
+    # queue survives every ping.
+    slot = asyncio.create_task(services.ask_access.acquire())
+    try:
+        while not slot.done():
+            await asyncio.wait({slot}, timeout=PING_INTERVAL_SECONDS)
+            if not slot.done():
+                yield PING
+        await slot
+
         producer = asyncio.create_task(produce())
         try:
             while True:
@@ -122,6 +137,14 @@ async def _sse_body(services: Services, request: AskRequest) -> AsyncIterator[st
             producer.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await producer
+    finally:
+        # A permit is held only if the acquire actually completed. Cancelling a
+        # pending one is safe: asyncio.Semaphore hands the permit back when it
+        # was granted in the same moment the waiter was cancelled.
+        if slot.done() and not slot.cancelled() and slot.exception() is None:
+            services.ask_access.release()
+        else:
+            slot.cancel()
 
 
 @router.post(

@@ -102,7 +102,6 @@ class Services:
         self._registry: DocumentRegistry | None = None
         self._qdrant: QdrantClient | None = None
         self._vectorstore: QdrantVectorStore | None = None
-        self._retrieval_stores: dict[str, QdrantVectorStore] = {}
         self._sparse_embeddings: SparseEmbeddings | None = None
         self._active_collection: str | None = None
         self._reranker: Reranker | None = None
@@ -130,6 +129,11 @@ class Services:
         # without this, searches have no bound but the per-client rate limit
         # and can starve everything else that needs a thread.
         self.search_access = anyio.CapacityLimiter(settings.max_concurrent_searches)
+        # Spool slots. Held from before the multipart body is parsed until the
+        # route's staged copy is gone, because both live on the same temporary
+        # filesystem and only the ingress middleware runs early enough to bound
+        # the first of them.
+        self.upload_access = asyncio.Semaphore(settings.max_concurrent_uploads)
         self.rate_limiter = SlidingWindowRateLimiter()
         self.metrics = RuntimeMetrics()
         # Private diagnostic for readiness; public responses expose only a
@@ -241,31 +245,6 @@ class Services:
                     )
             return self._vectorstore
 
-    def retrieval_store(self, mode: str | None = None) -> QdrantVectorStore:
-        """Return a query view over the same dense+sparse physical index."""
-        selected = mode or self.settings.retrieval_mode
-        query_mode = "hybrid" if selected == "hybrid_rerank" else selected
-        base = self.vectorstore
-        if query_mode == "hybrid":
-            return base
-        with self._store_lock:
-            cached = self._retrieval_stores.get(query_mode)
-            if cached is not None:
-                return cached
-            from reed.rag.vectorstore import build_vectorstore
-
-            assert self._sparse_embeddings is not None
-            cached = build_vectorstore(
-                self.qdrant,
-                self.settings,
-                self.embeddings,
-                self._sparse_embeddings,
-                collection_name=self.active_collection_name,
-                retrieval_mode=query_mode,
-            )
-            self._retrieval_stores[query_mode] = cached
-            return cached
-
     @property
     def sparse_embeddings(self) -> SparseEmbeddings:
         if self._sparse_embeddings is None:
@@ -320,7 +299,6 @@ class Services:
         """Invalidate cached store objects after an atomic registry switch."""
         with self._store_lock:
             self._vectorstore = None
-            self._retrieval_stores.clear()
             self._active_collection = collection_name
         with self._bootstrap_lock:
             self._bootstrap_fatal_error = None
@@ -371,7 +349,6 @@ class Services:
         """Invalidate a remote store that failed a live readiness probe."""
         with self._store_lock:
             self._vectorstore = None
-            self._retrieval_stores.clear()
             self._sparse_embeddings = None
         with self._bootstrap_lock:
             self.startup_error = f"{type(exc).__name__}: {exc}"
@@ -524,7 +501,6 @@ class Services:
                 self._qdrant = None
             self._vectorstore = None
             self._active_collection = None
-            self._retrieval_stores.clear()
             self._sparse_embeddings = None
 
     def schedule_vector_cleanup(self, doc_id: str) -> None:
