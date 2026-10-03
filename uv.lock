@@ -2741,6 +2741,7 @@ dependencies = [
     { name = "python-multipart" },
     { name = "qdrant-client", extra = ["fastembed"] },
     { name = "selectolax" },
+    { name = "urllib3" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -2778,6 +2779,7 @@ requires-dist = [
     { name = "qdrant-client", extras = ["fastembed"], specifier = ">=1.19.1" },
     { name = "selectolax", specifier = ">=0.4.12,<0.5" },
     { name = "sentence-transformers", marker = "extra == 'rerank'", specifier = ">=6.1.0,<7" },
+    { name = "urllib3", specifier = ">=2.8.0,<3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.53.0" },
 ]
 provides-extras = ["rerank"]
