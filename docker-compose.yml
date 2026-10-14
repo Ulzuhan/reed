@@ -94,7 +94,7 @@ services:
       - ALL
 
   qdrant:
-    image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
+    image: qdrant/qdrant:v1.19.2@sha256:b7b0444c4c351c970b98e90a6f89c2ee4287c65b44e52b4cb503fa5b2aa927ad
     volumes:
       - qdrant_storage:/qdrant/storage
     healthcheck:
@@ -111,7 +111,7 @@ services:
   #   docker compose exec ollama ollama pull qwen3.5:4b
   #   docker compose exec ollama ollama pull embeddinggemma
   ollama:
-    image: ollama/ollama:0.33.3@sha256:32931b46719f673c05fdbaa81ccb26da18ea4a1c57590a754874ab28ba269eb2
+    image: ollama/ollama:0.40.3@sha256:adca95a12c2b386a8f9a995e7fa0600e187e3323b5e5522f5a6c3b1ec73eff99
     profiles: ["ollama"]
     volumes:
       - ollama_models:/root/.ollama
